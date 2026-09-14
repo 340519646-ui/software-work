@@ -1,0 +1,46 @@
+# ===== 环境与密钥 =====
+.env
+*.env.local
+.venv/
+venv/
+env/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ===== 数据产物（体积大 / 可由 pipeline 重建） =====
+data/raw/html/*
+!data/raw/html/.gitkeep
+data/raw/images/*
+!data/raw/images/.gitkeep
+data/processed/*.csv
+data/processed/*.xlsx
+data/processed/*.json
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/logs/
+!data/logs/.gitkeep
+
+# ===== 日志与临时文件 =====
+*.log
+*.tmp
+tmp/
+
+# ===== 编辑器 / 操作系统 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

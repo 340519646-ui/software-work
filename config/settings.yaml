@@ -1,0 +1,76 @@
+# ============================================================
+# 全局运行配置
+# 敏感信息（API Key / 代理口令）一律放 .env，不写入本文件
+# 优先级：.env 环境变量 > settings.yaml > 代码默认值
+# ============================================================
+
+project:
+  name: employment-data-pipeline
+  version: 0.1.0
+
+# ---------- 路径（相对项目根目录） ----------
+paths:
+  data_dir: data
+  raw_html_dir: data/raw/html
+  raw_image_dir: data/raw/images
+  processed_dir: data/processed
+  csv_output: data/processed/jobs.csv
+  xlsx_output: data/processed/jobs.xlsx
+  database: data/employment.db
+  log_dir: data/logs
+
+# ---------- 爬虫 ----------
+crawler:
+  # 入口列表页（按目标站点自行补充）
+  start_urls: []
+  # 列表页 URL 模板，{page} 为页码占位符
+  list_url_template: ""
+  max_pages: 100            # 最多抓取页数
+  request_delay: 1.5        # 每次请求间隔（秒），礼貌抓取
+  timeout: 20               # 单次请求超时（秒）
+  max_retries: 3            # 失败重试次数
+  concurrency: 4            # 并发请求数
+  respect_robots: true      # 是否遵守 robots.txt
+  save_html: true           # 是否落地原始 HTML 便于复现
+  save_images: false        # 是否下载职位图片/附件
+  use_selenium: false       # 动态渲染页面时置 true
+
+# ---------- 解析 ----------
+parser:
+  use_llm: false            # 规则解析不完整时启用 LLM 兜底
+  llm_min_fields: 6         # 规则解析字段数低于该值时触发 LLM
+  use_ocr: false            # 识别图片型页面
+  clean:
+    remove_html_tags: true
+    remove_extra_whitespace: true
+    normalize_fullwidth: true   # 全角转半角
+    strip_emoji: true
+  # 站点级选择器规则（可选）：文件不存在时使用 src/parser/rules.py 内置规则
+  rules_file: config/rules.yaml
+
+# ---------- 校验 ----------
+validation:
+  fail_on_error: false      # true 则校验不通过的记录直接中断
+  required_fields:
+    - job_title
+    - company_name
+  salary:
+    min_monthly: 1000       # 月薪下限（元），越界视为异常
+    max_monthly: 500000     # 月薪上限（元）
+  dedup_keys:               # 去重键，按顺序逐级尝试
+    - source_url
+    - [company_name, job_title, city]
+
+# ---------- 存储 ----------
+storage:
+  engine: sqlite
+  echo_sql: false
+  batch_size: 500           # 批量入库条数
+  export_csv: true
+  export_xlsx: true
+
+# ---------- 日志 ----------
+logging:
+  level: INFO
+  file_name: pipeline.log
+  console: true

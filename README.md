@@ -1,203 +1,257 @@
-# SearchEngine —— 轻量级检索引擎
+# employment-data-pipeline —— 就业数据采集与分析流水线
 
 > 软件工程课程作业项目（Course Project of Software Engineering）
 
 ## 一、项目简介
 
-本项目是软件工程课程的作业项目，选题为**检索引擎（Search Engine）**。
+本项目实现一条**就业/招聘数据采集与分析流水线**，把分散在招聘网站上的职位信息，
+经过采集、解析、清洗、校验、去重、入库，最终产出结构化的数据集与统计指标，
+为「专业就业形势分析」这类课程实验提供可复现的数据基础。
 
-项目完整地实现一个从**网页抓取 → 文本处理 → 倒排索引构建 → 检索排序 → 结果展示**
-的全流程检索引擎，并按照软件工程的规范完成需求分析、系统设计、编码实现、
-测试与交付，重点训练一个可运行的、结构清晰的中小型软件系统的工程化开发能力。
-
-与只关注算法实现的小 demo 不同，本项目更强调**工程属性**：
-
-- 有明确的需求规格与用例；
-- 有分层、可替换、可测试的架构设计；
-- 有版本控制、单元测试、持续集成与文档；
-- 有可量化的性能指标（索引构建速度、查询延迟、召回率与准确率）。
-
-## 二、项目目标
-
-| 编号 | 目标 | 验收标准 |
-| ---- | ---- | -------- |
-| G1 | 完成可控规模的网页抓取与解析 | 支持 ≥ 1 万篇文档的爬取与清洗 |
-| G2 | 构建高效的倒排索引 | 万级文档索引构建时间 ≤ 3 分钟 |
-| G3 | 提供相关性排序的中文/英文检索 | 单次查询平均延迟 ≤ 200 ms |
-| G4 | 提供可用的 Web 检索界面 | 支持分页、高亮、耗时显示 |
-| G5 | 形成完整工程文档与测试报告 | 核心模块单元测试覆盖率 ≥ 70% |
-
-## 三、功能特性
-
-### 3.1 核心功能
-
-- **网页抓取（Crawler）**：基于 URL 队列的广度优先抓取，支持 robots.txt 协议、
-  域名限速、失败重试与去重。
-- **文本处理（Text Processing）**：HTML 正文抽取、去标签、大小写与全半角归一化、
-  中文分词与英文词干还原、停用词过滤。
-- **索引构建（Indexer）**：倒排索引（词典 + 倒排列表），记录词频与位置信息，
-  支持增量更新与索引持久化。
-- **检索与排序（Retrieval & Ranking）**：布尔检索、短语检索、TF-IDF 与
-  BM25 相关性排序、向量空间余弦相似度。
-- **结果展示（Web UI）**：查询输入、结果分页、关键词高亮、耗时统计、
-  搜索建议。
-
-### 3.2 扩展功能（可选，按迭代计划交付）
-
-- 拼写纠错与查询扩展（同义词）。
-- 基于 PageRank 的链接权威度加权。
-- 搜索日志统计与热门查询推荐。
-- 拼音检索与中文同义词。
-
-## 四、系统架构
-
-项目采用**分层架构 + 管道（Pipeline）模式**，各层之间通过明确定义的接口解耦，
-便于独立开发、测试与替换：
+流水线一句话概括：
 
 ```
-┌──────────────────────────────────────────────┐
-│  表示层  Web UI (HTML/CSS/JS)                 │
-├──────────────────────────────────────────────┤
-│  接口层  RESTful API (查询、建议、统计)        │
-├──────────────────────────────────────────────┤
-│  业务层  Query Parser / Ranker / Searcher     │
-├──────────────────────────────────────────────┤
-│  数据层  Inverted Index / Document Store      │
-├──────────────────────────────────────────────┤
-│  采集层  Crawler / Parser / Cleaner           │
-└──────────────────────────────────────────────┘
+列表页 → 详情页 → 原始 HTML → 结构化字段 → 校验去重 → SQLite → CSV / Excel → 统计分析
 ```
 
-数据流向：
+与只写一个爬虫脚本的小 demo 不同，本项目按软件工程的规范组织：
 
+- 采集、解析、存储、校验、统计各层解耦，接口清晰、可单独测试；
+- 站点差异收敛在 `config/` 的配置与规则里，而不是散落在代码中；
+- 原始 HTML 落地归档，保证结果可复现、可回放重解析；
+- 解析策略分级（规则 → LLM 兜底 → OCR），并记录每条记录实际用了哪种策略；
+- 有单元测试、版本控制与实验文档。
+
+## 二、处理流程
+
+```mermaid
+flowchart TD
+    A[config/settings.yaml<br/>start_urls] --> B[crawler.list_page<br/>翻页采集列表页]
+    B --> C[解析列表页<br/>提取详情页链接]
+    C --> D[crawler.detail_page<br/>抓取详情页]
+    D --> E[data/raw/html<br/>归档原始 HTML]
+    E --> F[parser.cleaner<br/>去标签 / 全角转半角 / 去噪]
+    F --> G[parser.rules<br/>CSS 选择器规则抽取]
+    G --> H{字段完整?}
+    H -- 否 --> I[parser.llm<br/>大模型兜底抽取]
+    H -- 是 --> J[parser.extractor<br/>字段归一化]
+    I --> J
+    J --> K[validation.validator<br/>必填校验 / 区间校验 / 去重]
+    K --> L[storage.database<br/>写入 SQLite]
+    L --> M[data/processed/jobs.csv<br/>data/processed/jobs.xlsx]
+    L --> N[validation.statistics<br/>薪资 / 学历 / 城市 统计]
 ```
-种子 URL → 抓取 → 解析清洗 → 分词 → 建索引 → 存储
-                                              ↓
-用户查询 → 查询解析 → 索引检索 → 相关性排序 → 结果展示
-```
 
-## 五、技术栈
-
-| 层次 | 技术选型 | 说明 |
-| ---- | -------- | ---- |
-| 前端 | HTML / CSS / JavaScript（Vite 构建） | 检索界面与结果展示 |
-| 后端 | Python 3 + FastAPI | 提供 REST API |
-| 分词 | jieba（中文）/ 自研英文分词器 | 文本切分 |
-| 索引存储 | 磁盘倒排索引文件 + SQLite | 轻量、免额外部署 |
-| 测试 | pytest + coverage | 单元测试与覆盖率 |
-| 工具 | Git / GitHub / GitHub Actions | 版本控制与 CI |
-| 文档 | Markdown + Mermaid | 需求、设计与接口文档 |
-
-## 六、目录结构
+## 三、目录结构
 
 ```
 software-work/
-├── docs/                 # 需求规格、概要设计、详细设计、测试报告
+├── README.md
+├── requirements.txt          # 依赖清单
+├── .gitignore                # 忽略 .env、数据产物、缓存
+├── .env.example              # 环境变量模板（复制为 .env 后填写）
+│
+├── config/
+│   ├── settings.yaml         # 全局运行配置：路径 / 爬虫 / 解析 / 校验 / 存储 / 日志
+│   ├── fields.yaml           # 字段定义：23 个标准字段的类型、必填、归一化方式
+│   └── aliases.yaml          # 别名归一化字典：城市 / 学历 / 经验 / 规模 / 薪资单位
+│
+├── data/
+│   ├── raw/
+│   │   ├── html/             # 原始页面归档（可复现的关键）
+│   │   └── images/           # 图片 / 附件（按需下载）
+│   ├── processed/
+│   │   ├── jobs.csv          # 导出：结构化数据集
+│   │   └── jobs.xlsx         # 导出：带统计表的 Excel
+│   └── employment.db         # SQLite 库
+│
 ├── src/
-│   ├── crawler/          # 网页抓取与解析
-│   ├── indexer/          # 分词与倒排索引构建
-│   ├── search/           # 查询解析、检索与排序
-│   ├── api/              # RESTful 接口层
-│   └── web/              # 前端页面
-├── tests/                # 单元测试与集成测试
-├── data/                 # 原始文档与索引数据（不入库）
-├── scripts/              # 构建与启动脚本
-└── README.md
+│   ├── crawler/
+│   │   ├── session.py        # 会话管理：UA、代理、重试、限速
+│   │   ├── list_page.py      # 列表页采集与翻页
+│   │   ├── detail_page.py    # 详情页采集
+│   │   └── crawler.py        # 采集调度入口
+│   ├── parser/
+│   │   ├── cleaner.py        # 文本清洗与归一化
+│   │   ├── rules.py          # 站点级 CSS 选择器规则
+│   │   ├── extractor.py      # 字段抽取与组装
+│   │   ├── llm.py            # 大模型兜底抽取
+│   │   └── ocr.py            # 图片型页面文字识别
+│   ├── storage/
+│   │   ├── database.py       # 连接、建表、批量写入、导出
+│   │   └── models.py         # ORM 数据模型
+│   ├── pipeline/
+│   │   └── pipeline.py       # 端到端编排
+│   ├── validation/
+│   │   ├── validator.py      # 必填 / 区间 / 枚举 / 去重校验
+│   │   └── statistics.py     # 统计分析
+│   └── main.py               # 命令行入口
+│
+├── tests/
+│   ├── test_cleaner.py       # 清洗函数单测
+│   ├── test_rules.py         # 选择器规则单测（基于样本 HTML）
+│   ├── test_parser.py        # 抽取结果单测
+│   └── test_database.py      # 入库与查询单测（临时库）
+│
+└── docs/
+    ├── architecture.md       # 架构与模块设计
+    ├── experiment.md         # 实验设计、指标与结论
+    └── screenshots/          # 运行截图
 ```
 
-## 七、快速开始
+## 四、技术栈
 
-### 7.1 环境要求
+| 层次 | 技术选型 | 说明 |
+| ---- | -------- | ---- |
+| 采集 | requests / BeautifulSoup / lxml | 静态页面抓取与解析 |
+| 采集（动态） | Selenium + webdriver-manager | 需 JS 渲染时启用 |
+| 解析增强 | OpenAI 兼容接口（`LLM_*`） | 规则抽取不完整时兜底 |
+| 解析增强 | pytesseract + Pillow（`OCR_*`） | 图片型页面识别 |
+| 存储 | SQLAlchemy 2.x + SQLite | 单文件库，免部署 |
+| 数据导出 | pandas + openpyxl | CSV / Excel 双格式 |
+| 配置 | PyYAML + python-dotenv | 配置与密钥分离 |
+| 测试 | pytest + pytest-cov | 单元测试与覆盖率 |
+| 工具 | Git / GitHub | 版本控制与协作 |
 
-- Python 3.10+
-- Node.js 18+（仅前端构建需要）
-
-### 7.2 安装与运行
+## 五、环境准备
 
 ```bash
-# 克隆仓库
-git clone https://github.com/340519646-ui/software-work.git
-cd software-work
+# 1. 进入项目
+cd ~/software-work
 
-# 安装后端依赖
+# 2. 建议使用虚拟环境
+python3 -m venv .venv && source .venv/bin/activate
+
+# 3. 安装依赖
 pip install -r requirements.txt
 
-# 构建索引（示例：抓取并索引种子站点）
-python scripts/build_index.py --seeds data/seeds.txt --output data/index
-
-# 启动检索服务
-uvicorn src.api.main:app --reload --port 8000
-
-# 构建前端（可选）
-npm install && npm run dev
+# 4. 生成本地配置（.env 已被 .gitignore 忽略，不会提交）
+cp .env.example .env
 ```
 
-浏览器访问 `http://localhost:8000` 即可使用检索界面。
+OCR 功能另需系统组件（可选）：`sudo apt install tesseract-ocr tesseract-ocr-chi-sim`。
 
-### 7.3 运行测试
+## 六、配置说明
+
+### 6.1 `config/settings.yaml`
+
+| 配置段 | 关键项 | 说明 |
+| ------ | ------ | ---- |
+| `paths` | `raw_html_dir` / `csv_output` / `database` | 各阶段输入输出路径（相对项目根） |
+| `crawler` | `start_urls`、`list_url_template` | 采集入口，`{page}` 为页码占位符 |
+| `crawler` | `request_delay` / `concurrency` / `max_retries` | 礼貌抓取与稳定性控制 |
+| `crawler` | `respect_robots` / `save_html` | 遵守 robots.txt、归档原始页面 |
+| `parser` | `use_llm` / `llm_min_fields` | 是否启用 LLM 兜底，及触发阈值 |
+| `parser` | `use_ocr` | 是否启用 OCR |
+| `validation` | `required_fields`、`salary.min_monthly/max_monthly` | 必填与合理区间 |
+| `validation` | `dedup_keys` | 去重键，按顺序逐级尝试 |
+| `storage` | `batch_size` / `export_csv` / `export_xlsx` | 入库批量与导出开关 |
+
+### 6.2 `config/fields.yaml`（共 23 个字段）
+
+每个字段声明 `name / label / type / required / normalize / aliases`，
+是**建表、导出表头、解析目标**的唯一来源。
+
+| 字段 | 中文名 | 类型 | 必填 | 归一化 |
+| ---- | ------ | ---- | ---- | ------ |
+| `job_title` | 职位名称 | str | ✔ | trim、全角转半角 |
+| `company_name` | 公司名称 | str | ✔ | trim |
+| `company_size` | 公司规模 | str | | trim |
+| `industry` | 所属行业 | str | | trim |
+| `city` | 工作城市 | str | ✔ | 城市别名归一 |
+| `district` | 行政区 | str | | trim |
+| `salary_raw` | 薪资原文 | str | | trim |
+| `salary_min` / `salary_max` | 月薪下限 / 上限 | int | | 薪资统一换算为元/月 |
+| `salary_months` | 薪资月数 | int | | trim |
+| `education` | 学历要求 | str | | 学历别名归一 |
+| `experience` | 经验要求 | str | | 经验别名归一 |
+| `job_category` | 职位类别 | str | | trim |
+| `headcount` | 招聘人数 | int | | trim |
+| `job_description` | 岗位职责 | str | | HTML 转文本、折叠空白 |
+| `job_requirement` | 任职要求 | str | | HTML 转文本、折叠空白 |
+| `publish_date` / `deadline` | 发布时间 / 截止日期 | date | | 日期解析 |
+| `source` | 数据来源 | str | ✔ | trim |
+| `source_url` | 详情链接 | str | ✔ | 补全为绝对 URL |
+| `crawl_time` | 采集时间 | date | ✔ | 采集时写入 |
+| `raw_html_path` | 原始页面路径 | str | | trim |
+| `extract_method` | 抽取方式 | str | | rule / llm / ocr / hybrid |
+
+### 6.3 `config/aliases.yaml`
+
+把同一含义的多种写法收敛为统一取值，降低统计与去重噪声，覆盖：
+城市（如 `北京市`/`京` → `北京`）、学历（`统招本科` → `本科`）、
+经验（`应届` → `不限`）、公司规模、公司性质、薪资单位（`k`/`千` → `K`）等。
+
+### 6.4 `.env`（不进版本库）
+
+`LLM_ENABLED` / `LLM_API_KEY` / `LLM_MODEL` / `DATABASE_URL` /
+`CRAWLER_USER_AGENT` / `CRAWLER_PROXY` / `OCR_ENABLED` / `LOG_LEVEL` 等。
+优先级：**`.env` 环境变量 > `settings.yaml` > 代码默认值**。
+
+## 七、运行方式（规划中的接口）
+
+`src/**/*.py` 目前为空占位文件，下表的命令行接口为设计约定，实现后按此调用：
 
 ```bash
-pytest -v --cov=src
+# 端到端跑完整流水线
+python -m src.main --pages 20
+
+# 只重解析已归档的原始 HTML（不重新联网，便于调规则）
+python -m src.main --from-cache
+
+# 跳过采集，直接用已有原始 HTML 重跑
+python -m src.main --skip-crawl --export csv,xlsx
 ```
 
-## 八、接口设计（草案）
+## 八、数据输出
 
-| 方法 | 路径 | 说明 |
+| 产物 | 路径 | 说明 |
 | ---- | ---- | ---- |
-| GET | `/api/search?q=&page=&size=` | 执行检索，返回排序后的结果列表 |
-| GET | `/api/suggest?q=` | 查询联想与拼写纠错建议 |
-| GET | `/api/doc/{id}` | 获取指定文档详情 |
-| GET | `/api/stats` | 索引规模与检索耗时统计 |
+| 原始页面 | `data/raw/html/` | 归档 HTML，支持离线重解析 |
+| 结构化数据集 | `data/processed/jobs.csv` | 列顺序由 `fields.yaml` 决定 |
+| Excel 报告 | `data/processed/jobs.xlsx` | 数据表 + 统计汇总表 |
+| 数据库 | `data/employment.db` | SQLite，主表 `jobs`，`source_url` 唯一索引 |
 
-响应示例：
+> 三个产物均在 `.gitignore` 中：体积大且可由流水线重建，不入版本库。
 
-```json
-{
-  "query": "倒排索引",
-  "total": 128,
-  "took_ms": 42,
-  "page": 1,
-  "size": 10,
-  "results": [
-    {
-      "doc_id": "doc-0007",
-      "title": "倒排索引的构建与压缩",
-      "url": "http://example.com/doc-0007",
-      "score": 8.73,
-      "snippet": "...<em>倒排索引</em>是一种..."
-    }
-  ]
-}
+## 九、测试
+
+```bash
+pytest -v --cov=src --cov-report=term-missing
 ```
 
-## 九、开发计划（迭代）
+`tests/` 覆盖重点：清洗与归一化函数的边界用例、选择器规则对样本 HTML 的抽取结果、
+字段抽取组装、入库与去重（使用临时库，不污染 `data/employment.db`）。
 
-| 迭代 | 周期 | 交付内容 |
-| ---- | ---- | -------- |
-| 迭代 0 | 第 1 周 | 选题、需求分析、立项与仓库初始化 |
-| 迭代 1 | 第 2–3 周 | 爬虫与文本处理模块、单元测试 |
-| 迭代 2 | 第 4–5 周 | 倒排索引构建与持久化、检索原型 |
-| 迭代 3 | 第 6–7 周 | 相关性排序、REST API、前端界面 |
-| 迭代 4 | 第 8–9 周 | 性能优化、集成测试、文档与答辩 |
+## 十、开发状态与迭代计划
 
-## 十、团队分工
+| 迭代 | 交付内容 | 状态 |
+| ---- | -------- | ---- |
+| 迭代 0 | 目录骨架、配置体系（settings / fields / aliases）、依赖与忽略规则 | ✅ 已完成 |
+| 迭代 1 | `crawler/` 采集列表页与详情页，原始 HTML 归档 | ⏳ 待实现 |
+| 迭代 2 | `parser/` 清洗 + 规则抽取 + 字段归一化 | ⏳ 待实现 |
+| 迭代 3 | `storage/` 建表入库、CSV/Excel 导出；`validation/` 校验去重 | ⏳ 待实现 |
+| 迭代 4 | `parser/llm.py`、`parser/ocr.py` 增强解析；`validation/statistics.py` 统计 | ⏳ 待实现 |
+| 迭代 5 | 单元测试补全、`docs/` 实验文档与截图、性能与稳定性调优 | ⏳ 待实现 |
 
-| 角色 | 职责 |
+> 当前状态：**脚手架阶段**。`config/` 配置、`requirements.txt`、`.env.example`、`.gitignore`
+> 已就绪并通过校验；`src/` 与 `tests/` 下均为待填充的空文件。
+
+## 十一、合规与使用边界
+
+- 仅采集**公开发布**的招聘信息，遵守目标站点 `robots.txt` 与用户协议；
+- 请求间隔默认 1.5 秒并限制并发，避免对目标站点造成压力；
+- **不采集、不存储**招聘联系人姓名、手机号、微信等个人信息；
+- 数据仅用于课程学习与研究分析，不用于商业用途，不做二次分发。
+
+## 十二、文档
+
+| 文档 | 内容 |
 | ---- | ---- |
-| 项目负责人 | 需求把控、进度管理、集成与验收 |
-| 采集与索引 | 爬虫、文本处理、倒排索引 |
-| 检索与排序 | 查询解析、相关性排序、性能优化 |
-| 前端与测试 | 检索界面、测试用例与质量保障 |
-| 文档与配置 | 设计文档、CI 配置、交付物整理 |
+| `docs/architecture.md` | 分层架构、模块职责、数据流、接口约定 |
+| `docs/experiment.md` | 实验设计、字段抽取准确率、去重率、统计结论 |
+| `docs/screenshots/` | 运行截图与结果示例 |
 
-## 十一、质量保证
-
-- **代码规范**：遵循 PEP 8（后端）与 ESLint（前端），提交前本地检查。
-- **代码评审**：所有改动通过 Pull Request 合入 `main` 分支。
-- **测试**：核心模块单元测试覆盖率不低于 70%，关键路径补充集成测试。
-- **持续集成**：GitHub Actions 自动执行测试与覆盖率上报。
-- **版本管理**：采用语义化提交（feat / fix / docs / test / refactor）。
-
-## 十二、许可
+## 十三、许可
 
 本项目仅用于课程学习与教学目的。

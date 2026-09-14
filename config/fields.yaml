@@ -1,0 +1,174 @@
+# ============================================================
+# 字段定义：数据表结构 / CSV 列顺序 / 解析目标字段的唯一来源
+#   name      : 标准字段名（入库与导出统一使用）
+#   label     : 中文字段名（导出表头、报表展示）
+#   type      : str | int | float | date | list
+#   required  : 是否为必填字段（校验阶段使用）
+#   aliases   : 该字段在页面上的可能叫法，见 config/aliases.yaml
+#   normalize : 归一化动作，供 parser/cleaner.py 调用
+# ============================================================
+
+version: 1
+
+fields:
+  - name: job_title
+    label: 职位名称
+    type: str
+    required: true
+    normalize: [trim, fullwidth_to_halfwidth]
+    aliases: [职位, 岗位, 岗位名称, 招聘职位]
+
+  - name: company_name
+    label: 公司名称
+    type: str
+    required: true
+    normalize: [trim]
+    aliases: [公司, 招聘单位, 企业名称, 用人单位]
+
+  - name: company_size
+    label: 公司规模
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: [企业规模, 人员规模]
+
+  - name: industry
+    label: 所属行业
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: [行业, 公司行业]
+
+  - name: city
+    label: 工作城市
+    type: str
+    required: true
+    normalize: [trim, city_alias]
+    aliases: [城市, 工作地点, 所在地, 办公地点]
+
+  - name: district
+    label: 行政区
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: [区域, 地区]
+
+  - name: salary_raw
+    label: 薪资原文
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: [薪资, 薪酬, 月薪, 待遇]
+
+  - name: salary_min
+    label: 月薪下限
+    type: int
+    required: false
+    normalize: [salary_to_monthly]
+    aliases: []
+
+  - name: salary_max
+    label: 月薪上限
+    type: int
+    required: false
+    normalize: [salary_to_monthly]
+    aliases: []
+
+  - name: salary_months
+    label: 薪资月数
+    type: int
+    required: false
+    normalize: [trim]
+    aliases: [几薪, 年薪月数]
+
+  - name: education
+    label: 学历要求
+    type: str
+    required: false
+    normalize: [education_alias]
+    aliases: [学历, 最低学历, 学历要求]
+
+  - name: experience
+    label: 经验要求
+    type: str
+    required: false
+    normalize: [experience_alias]
+    aliases: [工作经验, 经验, 年限要求]
+
+  - name: job_category
+    label: 职位类别
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: [职能, 岗位类别, 职位类型]
+
+  - name: headcount
+    label: 招聘人数
+    type: int
+    required: false
+    normalize: [trim]
+    aliases: [人数, 招聘数量]
+
+  - name: job_description
+    label: 岗位职责
+    type: str
+    required: false
+    normalize: [html_to_text, collapse_whitespace]
+    aliases: [职责, 工作内容, 职位描述]
+
+  - name: job_requirement
+    label: 任职要求
+    type: str
+    required: false
+    normalize: [html_to_text, collapse_whitespace]
+    aliases: [要求, 任职资格, 应聘条件]
+
+  - name: publish_date
+    label: 发布时间
+    type: date
+    required: false
+    normalize: [parse_date]
+    aliases: [发布日期, 更新时间, 发布]
+
+  - name: deadline
+    label: 截止日期
+    type: date
+    required: false
+    normalize: [parse_date]
+    aliases: [有效期, 报名截止时间]
+
+  - name: source
+    label: 数据来源
+    type: str
+    required: true
+    normalize: [trim]
+    aliases: [来源, 站点]
+
+  - name: source_url
+    label: 详情链接
+    type: str
+    required: true
+    normalize: [trim, absolutize_url]
+    aliases: [链接, 网址, 详情页]
+
+  - name: crawl_time
+    label: 采集时间
+    type: date
+    required: true
+    normalize: [now]
+    aliases: []
+
+  - name: raw_html_path
+    label: 原始页面路径
+    type: str
+    required: false
+    normalize: [trim]
+    aliases: []
+
+  - name: extract_method
+    label: 抽取方式
+    type: str
+    required: false
+    # rule | llm | ocr | hybrid，用于统计各解析策略的准确率
+    normalize: [trim]
+    aliases: []
