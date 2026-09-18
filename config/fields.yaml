@@ -1,174 +1,150 @@
 # ============================================================
-# 字段定义：数据表结构 / CSV 列顺序 / 解析目标字段的唯一来源
-#   name      : 标准字段名（入库与导出统一使用）
-#   label     : 中文字段名（导出表头、报表展示）
-#   type      : str | int | float | date | list
-#   required  : 是否为必填字段（校验阶段使用）
-#   aliases   : 该字段在页面上的可能叫法，见 config/aliases.yaml
-#   normalize : 归一化动作，供 parser/cleaner.py 调用
+# 字段口径：列序 / 中文名 / 类型 / 必填 / 归一化 / 别名
+#
+# 本文件是**导出列序与表结构的唯一来源**：
+#   data/processed/jobs.csv、jobs.xlsx 的表头，以及 articles 表
+#   的列顺序，都严格按下面的顺序生成，禁止任何模块自行排序或增删。
+#
+# required 的语义（与「七项核心字段缺失标未知」不冲突）：
+#   * required: true  -> 溯源红线字段，为空即校验失败、不允许入库；
+#   * 七项核心字段一律 required: false，缺失时填「未知」并进待人工清单。
 # ============================================================
 
 version: 1
 
 fields:
-  - name: job_title
-    label: 职位名称
-    type: str
-    required: true
-    normalize: [trim, fullwidth_to_halfwidth]
-    aliases: [职位, 岗位, 岗位名称, 招聘职位]
-
-  - name: company_name
-    label: 公司名称
-    type: str
-    required: true
-    normalize: [trim]
-    aliases: [公司, 招聘单位, 企业名称, 用人单位]
-
-  - name: company_size
-    label: 公司规模
+  # ---------- 溯源与主键 ----------
+  - name: article_key
+    label: 记录主键
     type: str
     required: false
-    normalize: [trim]
-    aliases: [企业规模, 人员规模]
+    normalize: [derive_sha1]
+    aliases: []
+    note: 由 source_url 推导（sha1 前 16 位），与归档文件名一致
 
-  - name: industry
-    label: 所属行业
+  # ---------- 七项核心字段（顺序 = 报表展示顺序） ----------
+  - name: graduation_year
+    label: 届别
     type: str
     required: false
-    normalize: [trim]
-    aliases: [行业, 公司行业]
+    normalize: [trim, year_normalize]
+    aliases: [届, 届次, 毕业届别, 毕业年份]
+
+  - name: grade
+    label: 年级
+    type: str
+    required: false
+    normalize: [trim, grade_alias]
+    aliases: [年级, 就读年级, 在读年级]
+
+  - name: degree
+    label: 学历
+    type: str
+    required: false
+    normalize: [trim, degree_alias]
+    aliases: [学历, 学历层次, 学位]
+
+  - name: major
+    label: 专业
+    type: str
+    required: false
+    normalize: [trim, major_alias]
+    aliases: [专业, 所学专业, 本科专业, 就读专业]
 
   - name: city
-    label: 工作城市
+    label: 城市
     type: str
-    required: true
+    required: false
     normalize: [trim, city_alias]
-    aliases: [城市, 工作地点, 所在地, 办公地点]
+    aliases: [城市, 工作城市, 就业城市, 签约城市, 所在地]
 
-  - name: district
-    label: 行政区
+  - name: employer
+    label: 单位
+    type: str
+    required: false
+    normalize: [trim, employer_normalize]
+    aliases: [单位, 就业单位, 签约单位, 工作单位, 用人单位, 公司]
+
+  - name: position
+    label: 岗位
+    type: str
+    required: false
+    normalize: [trim, position_normalize]
+    aliases: [岗位, 职位, 岗位名称, 职务, 工作岗位]
+
+  # ---------- 文章元信息 ----------
+  - name: article_title
+    label: 文章标题
     type: str
     required: false
     normalize: [trim]
-    aliases: [区域, 地区]
-
-  - name: salary_raw
-    label: 薪资原文
-    type: str
-    required: false
-    normalize: [trim]
-    aliases: [薪资, 薪酬, 月薪, 待遇]
-
-  - name: salary_min
-    label: 月薪下限
-    type: int
-    required: false
-    normalize: [salary_to_monthly]
     aliases: []
-
-  - name: salary_max
-    label: 月薪上限
-    type: int
-    required: false
-    normalize: [salary_to_monthly]
-    aliases: []
-
-  - name: salary_months
-    label: 薪资月数
-    type: int
-    required: false
-    normalize: [trim]
-    aliases: [几薪, 年薪月数]
-
-  - name: education
-    label: 学历要求
-    type: str
-    required: false
-    normalize: [education_alias]
-    aliases: [学历, 最低学历, 学历要求]
-
-  - name: experience
-    label: 经验要求
-    type: str
-    required: false
-    normalize: [experience_alias]
-    aliases: [工作经验, 经验, 年限要求]
-
-  - name: job_category
-    label: 职位类别
-    type: str
-    required: false
-    normalize: [trim]
-    aliases: [职能, 岗位类别, 职位类型]
-
-  - name: headcount
-    label: 招聘人数
-    type: int
-    required: false
-    normalize: [trim]
-    aliases: [人数, 招聘数量]
-
-  - name: job_description
-    label: 岗位职责
-    type: str
-    required: false
-    normalize: [html_to_text, collapse_whitespace]
-    aliases: [职责, 工作内容, 职位描述]
-
-  - name: job_requirement
-    label: 任职要求
-    type: str
-    required: false
-    normalize: [html_to_text, collapse_whitespace]
-    aliases: [要求, 任职资格, 应聘条件]
 
   - name: publish_date
     label: 发布时间
-    type: date
-    required: false
-    normalize: [parse_date]
-    aliases: [发布日期, 更新时间, 发布]
-
-  - name: deadline
-    label: 截止日期
-    type: date
-    required: false
-    normalize: [parse_date]
-    aliases: [有效期, 报名截止时间]
-
-  - name: source
-    label: 数据来源
     type: str
-    required: true
-    normalize: [trim]
-    aliases: [来源, 站点]
+    required: false
+    normalize: [trim, parse_date]
+    aliases: [发布日期, 发布时间, 更新时间]
 
+  # ---------- 溯源红线字段 ----------
   - name: source_url
-    label: 详情链接
+    label: 详情页链接
     type: str
     required: true
     normalize: [trim, absolutize_url]
     aliases: [链接, 网址, 详情页]
 
-  - name: crawl_time
-    label: 采集时间
-    type: date
-    required: true
-    normalize: [now]
+  - name: list_url
+    label: 列表页链接
+    type: str
+    required: false
+    normalize: [trim, absolutize_url]
     aliases: []
 
   - name: raw_html_path
-    label: 原始页面路径
+    label: 归档路径
     type: str
-    required: false
+    required: true
     normalize: [trim]
     aliases: []
 
+  - name: crawl_time
+    label: 采集时间
+    type: str
+    required: true
+    normalize: [iso_datetime]
+    aliases: []
+
+  # ---------- 抽取过程与复核 ----------
   - name: extract_method
     label: 抽取方式
     type: str
     required: false
-    # rule | llm | ocr | hybrid，用于统计各解析策略的准确率
+    # rule | llm | hybrid | none，归并规则见 contracts.JobRecord.apply_hits
+    normalize: [trim]
+    aliases: []
+
+  - name: content_kind
+    label: 内容来源
+    type: str
+    required: false
+    # html | ocr | mixed：正文来自网页还是来自图片 OCR，决定是否强制人工复核
+    normalize: [trim]
+    aliases: []
+
+  - name: evidence
+    label: 命中依据
+    type: str
+    required: false
+    # 不落库为独立字段，导出时由 JobRecord.evidence() 实时拼接
+    normalize: [trim]
+    aliases: []
+
+  - name: review_status
+    label: 复核状态
+    type: str
+    required: false
+    # pending | approved | corrected | rejected
     normalize: [trim]
     aliases: []

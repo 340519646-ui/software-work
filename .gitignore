@@ -24,9 +24,17 @@ data/raw/html/*
 !data/raw/html/.gitkeep
 data/raw/images/*
 !data/raw/images/.gitkeep
+# 采集清单与 OCR 缓存都是生成物：清单随每次采集变化，缓存按图片哈希增长
+data/raw/manifest.jsonl
+data/raw/ocr/
 data/processed/*.csv
 data/processed/*.xlsx
 data/processed/*.json
+# 登录会话（StorageState）：含 Cookie，**绝不能提交**
+data/.session.json
+data/.session*.json
+# 成果看板：由 scripts/make_report.py 从真实数据生成，不入库（含真实标题与链接）
+data/processed/*.html
 data/*.db
 data/*.sqlite
 data/*.sqlite3
@@ -44,3 +52,6 @@ tmp/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ===== Jupyter Notebook =====
+docs/overview.md

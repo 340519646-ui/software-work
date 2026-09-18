@@ -1,0 +1,193 @@
+# ============================================================
+# 主配置（唯一入口，由 src/config.py 加载并强类型化）
+#
+#   优先级：.env 环境变量 > 本文件 > src/config.py 内置默认值
+#   凭据（学号、密码、Cookie、API Key）**不要写在这里**，一律放 .env
+#
+#   改完可用下面命令验证配置是否合法（不联网）：
+#     python -m src.crawler.login_check --check-config-only   # 见 docs/architecture.md
+# ============================================================
+
+# 字段口径文件（列序、中文名、必填、归一化动作）
+fields_file: config/fields.yaml
+
+# ---------- 门户 ----------
+portal:
+  # 门户 BASE 地址（就业信息栏目所在站点根）
+  # 实测（scripts/probe_portal.py）：my.muc.edu.cn → 公网地址 210.31.15.39，TLS 正常，
+  # 校外可访问；但未登录会被 302 到 ca.muc.edu.cn/zfca/login（统一身份认证）。
+  base_url: "https://my.muc.edu.cn"
+  # 就业信息栏目列表页地址（或带 {page} 占位符的模板）
+  # 实测该地址使用 hash 路由：#/notice/noticeList?lo=10&num=0
+  # 【待核对】hash 路由下分页很可能由前端 XHR 完成，需在 playwright 模式下确认翻页方式
+  list_url: "https://my.muc.edu.cn/page/11#/notice/noticeList?lo=10&num=0"
+  # 翻页参数名（hash 路由下可能不适用，【待核对】）
+  page_param: page
+  # 分页范围：先小范围（如 1-2 页）试跑，确认解析正确再放大；
+  # page_end: 0 表示**自动翻到最后一页**（实测门户共 1040 条 / 每页 15 条 ≈ 70 页）
+  page_start: 1
+  page_end: 2
+  # 列表页中详情链接的 CSS 选择器
+  # 【待核对】需登录后在浏览器开发者工具里确认真实 DOM 后填写；
+  # 不填时会退化为「抓取页面上所有链接」，对 SPA 页面基本无效
+  detail_link_selector: ""
+  # 登录页与登录态探测页（实测：未登录访问门户即跳转到该登录页）
+  login_url: "https://ca.muc.edu.cn/zfca/login"
+  login_check_url: "https://my.muc.edu.cn/page/11"
+
+  # ---------- 列表采集模式（实测本校门户是接口模式）----------
+  # html = 解析列表页 DOM；api = POST JSON 接口
+  mode: api
+  # 列表接口地址（实测：POST + Content-Type: application/json;charset=UTF-8）
+  api_url: "https://my.muc.edu.cn/comsys-portal-notice-web/getNoticeByPage"
+  # 参数提交方式：query = 拼进查询串（**实测本校门户只认这个**）
+  # 反例：把同样字段放 JSON 请求体里，服务端完全不解析 —— 翻页恒为第 1 页、
+  #      pageSize 恒为 10、栏目过滤 type 也不生效（total 44944 而非 1040）。
+  api_param_style: query
+  # 参数表（按实测填写）：页码、令牌、start/end 由程序注入，其余原样发送。
+  # type=10 就是「就业信息」栏目（过滤后 total=1040、每页 15 条、共 70 页）。
+  api_body:
+    pageSize: 15
+    type: "10"
+    is_add: "0"
+    system_show: 1
+    select_all: false
+    select_notice: ""
+    searchValue: ""
+    searchDepartment: ""
+    start_date: ""
+    end_date: ""
+    start: 0
+    end: 15
+  # 【待核对】实测请求体里还有 state / ggState / mobile_news / new_total / role / total /
+  #   totalCounts：它们看起来是前端回显的查询状态，是否必需需实测；
+  #   若接口报参数缺失，把它们补进上面的 api_body 即可。
+  # 页码字段名（实测：URL 不变，靠请求体的这个字段翻页）
+  api_page_field: currentPage
+  # 随机令牌字段名与格式（实测值形如 0.9887865334032206 —— 即 Math.random()）
+  api_token_field: comsys_random_t
+  api_token_style: js_random
+  api_token_length: 32
+  # 响应里列表数组的路径（实测：嵌套在外壳里，datas.tables）
+  # 外壳形如 {"datas": {...}, "msg": "success", "state": true}；
+  # 若填错，程序会自动递归定位并在日志里打出实际路径（config 里补上即可）
+  api_list_path: datas.tables
+  # 响应里记录总数与总页数（实测 total=1040、totalCounts=70、pageSize=15 → 70 页）
+  api_total_path: page.total
+  api_total_pages_path: page.totalCounts
+  # 列表项里的标题与时间字段名（实测）
+  # 另有 notice_first_time（首次发布）；notice_release_time 是最终发布时间
+  api_title_field: notice_title
+  api_date_field: notice_release_time
+  # ---------- 站外链接（实测：就业信息里大量通知指向微信公众号 / 腾讯文档）----------
+  # notice_link_state 为 1 且 notice_link 非空 → 正文在站外
+  api_link_field: notice_link
+  api_link_state_field: notice_link_state
+  api_link_state_external: 1
+  # fetch = 抓站外链接当正文（推荐，微信文章需 playwright 渲染）
+  # portal = 只抓门户详情页（站外链接仅记录）
+  # skip  = 跳过站外通知
+  external_link_policy: fetch
+  # 组织 ID 兜底：**留空**。实测列表项自带 organization_id（如 "11027"），
+  # 而 page.orgId（bks1044104407202525rg2）是另一套 ID，两者不可混用——
+  # 配错会静默生成打不开的详情链接，因此宁可留空（缺该字段的记录会被跳过）。
+  detail_org_id: ""
+  # 详情链接模板（实测）
+  #   https://my.muc.edu.cn/page/11#/print?notice_id=352209&show_type=1&type=10
+  # 注意三点：① 路由是 #/print（可打印视图，正文更完整、干扰更少）；
+  #          ② 只需 notice_id 一个占位，**不需要 organization_id**；
+  #          ③ show_type / type 是固定字面量（type=10 对应「就业信息」栏目）。
+  detail_url_template: "https://my.muc.edu.cn/page/11#/print?notice_id={notice_id}&show_type=1&type=10"
+
+# ---------- 登录 ----------
+auth:
+  # account = 用学号密码登录；cookie = 手动从浏览器复制 Cookie
+  method: account
+  # 学号 / 密码 / Cookie 一律从 .env 读取：
+  #   AUTH_STUDENT_ID / AUTH_PASSWORD / AUTH_COOKIE
+  # 会话（StorageState）落盘位置，实验结束必须删除（合规红线 4）
+  session_file: data/.session.json
+
+# ---------- 请求 ----------
+request:
+  # 【红线】请求间隔（秒），不得小于 2，验证会直接报错
+  interval_seconds: 2.0
+  timeout: 20
+  retries: 2
+  user_agent: Mozilla/5.0 (compatible; EmploymentDataPipeline/1.0)
+  # 代理从 .env 的 CRAWLER_PROXY 读取；此处留空表示直连
+  proxy: ""
+  # 【实测必填】开启原因有两条，都不是可选项：
+  #   1) 登录页使用 sm2 前端加密（js/sm2.min.js），纯 HTTP 明文提交不可行；
+  #   2) 列表页是 hash 路由的前端渲染页面。
+  # 开启前需先执行：playwright install
+  use_playwright: true
+  verify_tls: true
+  # 页面编码；留空则按响应头/内容自动判断
+  encoding: ""
+
+# ---------- 解析（一级规则 + 二级 LLM 兜底） ----------
+extract:
+  # 技术路线固定为规则优先，必须为 true（配置校验会强制）
+  rule_first: true
+  # 缺失值占位符固定为「未知」，不可改（配置校验会强制）
+  missing_placeholder: 未知
+  # 缺失字段待人工清单输出位置
+  manual_review_output: data/processed/manual_review.csv
+  # 原始 HTML 归档目录（溯源底座，清单文件在其父目录）
+  raw_html_dir: data/raw/html
+  # 站点级正则规则文件（可选，留空则使用 src/parser/rules.py 内置规则）
+  regex_file: ""
+  # 词表文件（城市 / 学历 / 届别 / 年级 / 专业 / 单位后缀）
+  lexicon_file: config/aliases.yaml
+  # 图片型分享的归档目录（按 <article_key>/<image_sha1>.png 存放）
+  ocr_images_dir: data/raw/images
+  # OCR 结果缓存目录（按图片内容哈希命名；命中即跳过识别，勿随意修改）
+  ocr_cache_dir: data/raw/ocr
+  # 规则命中数低于该值时触发二级 LLM 兜底（7 = 缺任一字段即兜底）
+  llm_trigger_below: 7
+
+# ---------- 二级抽取：LLM ----------
+llm:
+  # 关闭时：缺失字段直接标「未知」并进待人工清单
+  enabled: false
+  # openai = OpenAI 兼容接口；ollama = 本地模型
+  provider: openai
+  # 【要填】接口地址，如 https://api.openai.com/v1 或 http://localhost:11434/v1
+  base_url: ""
+  # 【要填】模型名，自行选择
+  model: ""
+  # API Key 从 .env 的 LLM_API_KEY 读取
+  timeout: 60
+  max_retries: 1
+  temperature: 0
+
+# ---------- 图片 OCR ----------
+ocr:
+  enabled: false
+  lang: chi_sim+eng
+  # tesseract 可执行文件路径从 .env 的 TESSERACT_CMD 读取；留空用系统 PATH
+  tesseract_cmd: ""
+
+# ---------- 存储 ----------
+storage:
+  db_path: data/employment.db
+  batch_size: 200
+
+# ---------- 导出 ----------
+output:
+  csv_path: data/processed/jobs.csv
+  xlsx_path: data/processed/jobs.xlsx
+
+# ---------- 人工抽检 ----------
+sampling:
+  # 抽检比例（0, 1]，建议 0.05 ~ 0.10
+  review_rate: 0.1
+  # 固定随机种子，保证同一批数据抽到的样本可复现
+  seed: 42
+
+# ---------- 日志 ----------
+logging:
+  level: INFO
+  file_name: pipeline.log
+  console: true
