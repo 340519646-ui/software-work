@@ -215,6 +215,52 @@ class StorageConfig:
 
 
 @dataclass(frozen=True)
+class SearchConfig:
+    """检索与「有倾向性采集」配置（SCHEMA_VERSION 1.5.0 新增）。
+
+    设计取舍：``trigger_enabled`` **默认 False**。检索本身完全离线，
+    但"缓存未命中就联网采集"会消耗真实请求，属于必须显式开启的动作；
+    默认关闭可保证「装好就能搜、绝不偷偷发请求」。
+    """
+
+    enabled: bool = True
+    """是否启用 Web 检索服务（关闭后 ``python -m src.search.server`` 拒绝启动）。"""
+
+    host: str = "127.0.0.1"
+    """**只能绑本机回环地址。** 该服务会返回真实抓取内容，不得对外监听。"""
+
+    port: int = 8765
+
+    default_limit: int = 20
+    max_limit: int = 100
+    """单页上限：防止前端构造 limit=100000 把整个库拖进内存。"""
+
+    cache_ttl_seconds: int = 300
+    """L2 查询缓存有效期（秒）。数据版本号变化会立即失效，不依赖这个 TTL。"""
+
+    cache_max_rows: int = 2000
+    """L2 缓存最多保留多少条查询（LRU 淘汰，防止无限增长）。"""
+
+    l1_size: int = 128
+    """L1 进程内缓存条数。"""
+
+    trigger_enabled: bool = False
+    """缓存未命中时是否允许触发定向采集（联网）。"""
+
+    max_fetch_pages: int = 2
+    """单次采集最多翻几页。每页 15 条 = 15 次详情请求，按 ≥2 秒计约 32 秒。"""
+
+    fetch_cooldown_seconds: int = 900
+    """同一查询串的采集冷却时间（秒），防止重复点击把请求放大。"""
+
+    max_estimated_seconds: float = 120.0
+    """预估耗时超过该值就拒绝触发（预算闸门）。"""
+
+    fts_tokenizer: str = "unicode61"
+    """FTS5 分词器。``trigram`` 让中文无需分词即可子串匹配（SQLite 内置，无新依赖）。"""
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     csv_path: str = DEFAULT_CSV_PATH
     xlsx_path: str = DEFAULT_XLSX_PATH
@@ -252,6 +298,7 @@ class AppConfig:
     llm: LlmConfig
     ocr: OcrConfig
     storage: StorageConfig
+    search: SearchConfig
     output: OutputConfig
     sampling: SamplingConfig
     logging: LoggingConfig
@@ -340,6 +387,14 @@ class AppConfig:
             },
             "ocr": {"enabled": self.ocr.enabled, "lang": self.ocr.lang},
             "storage": {"db_path": self.storage.db_path},
+            "search": {
+                "enabled": self.search.enabled,
+                "host": self.search.host,
+                "port": self.search.port,
+                "trigger_enabled": self.search.trigger_enabled,
+                "max_fetch_pages": self.search.max_fetch_pages,
+                "fts_tokenizer": self.search.fts_tokenizer,
+            },
             "output": {"csv_path": self.output.csv_path, "xlsx_path": self.output.xlsx_path},
             "sampling": {"review_rate": self.sampling.review_rate, "seed": self.sampling.seed},
             "columns": list(self.columns),
@@ -510,6 +565,7 @@ def load_config(
     llm_raw = _section(raw, "llm")
     ocr_raw = _section(raw, "ocr")
     storage_raw = _section(raw, "storage")
+    search_raw = _section(raw, "search")
     output_raw = _section(raw, "output")
     sampling_raw = _section(raw, "sampling")
     logging_raw = _section(raw, "logging")
@@ -600,6 +656,22 @@ def load_config(
         batch_size=int(storage_raw.get("batch_size", 200)),
     )
 
+    search = SearchConfig(
+        enabled=_as_bool(search_raw.get("enabled", True)),
+        host=str(search_raw.get("host", "127.0.0.1")),
+        port=int(search_raw.get("port", 8765)),
+        default_limit=int(search_raw.get("default_limit", 20)),
+        max_limit=int(search_raw.get("max_limit", 100)),
+        cache_ttl_seconds=int(search_raw.get("cache_ttl_seconds", 300)),
+        cache_max_rows=int(search_raw.get("cache_max_rows", 2000)),
+        l1_size=int(search_raw.get("l1_size", 128)),
+        trigger_enabled=_as_bool(search_raw.get("trigger_enabled", False)),
+        max_fetch_pages=int(search_raw.get("max_fetch_pages", 2)),
+        fetch_cooldown_seconds=int(search_raw.get("fetch_cooldown_seconds", 900)),
+        max_estimated_seconds=float(search_raw.get("max_estimated_seconds", 120.0)),
+        fts_tokenizer=str(search_raw.get("fts_tokenizer", "unicode61")),
+    )
+
     output = OutputConfig(
         csv_path=str(output_raw.get("csv_path", DEFAULT_CSV_PATH)),
         xlsx_path=str(output_raw.get("xlsx_path", DEFAULT_XLSX_PATH)),
@@ -628,6 +700,7 @@ def load_config(
         llm=llm,
         ocr=ocr,
         storage=storage,
+        search=search,
         output=output,
         sampling=sampling,
         logging=logging_cfg,
@@ -698,6 +771,35 @@ def validate_config(cfg: AppConfig) -> AppConfig:
 
     if cfg.storage.batch_size < 1:
         problems.append("storage.batch_size 必须 ≥ 1")
+
+    # 检索服务对外暴露真实抓取内容：只允许回环地址（安全红线）
+    if cfg.search.host not in ("127.0.0.1", "localhost", "::1"):
+        problems.append(
+            f"search.host={cfg.search.host!r} 非法：检索服务返回真实门户内容，"
+            "只允许绑定本机回环地址（127.0.0.1 / localhost / ::1）"
+        )
+
+    if not 1 <= cfg.search.port <= 65535:
+        problems.append(f"search.port 必须在 1~65535 之间，收到 {cfg.search.port}")
+
+    if cfg.search.default_limit < 1:
+        problems.append("search.default_limit 必须 ≥ 1")
+    if cfg.search.max_limit < cfg.search.default_limit:
+        problems.append(
+            f"search.max_limit={cfg.search.max_limit} 不得小于 "
+            f"search.default_limit={cfg.search.default_limit}"
+        )
+    if cfg.search.max_fetch_pages < 1:
+        problems.append("search.max_fetch_pages 必须 ≥ 1（每页 15 条，按 ≥2 秒/请求计）")
+    if cfg.search.fetch_cooldown_seconds < 0:
+        problems.append("search.fetch_cooldown_seconds 不得为负")
+    if cfg.search.max_estimated_seconds <= 0:
+        problems.append("search.max_estimated_seconds 必须为正数（预算闸门）")
+    if cfg.search.fts_tokenizer not in ("trigram", "unicode61"):
+        problems.append(
+            f"search.fts_tokenizer 只能是 trigram 或 unicode61，收到 {cfg.search.fts_tokenizer!r}"
+            "（trigram 才能让中文子串匹配）"
+        )
 
     if not cfg.extract.llm_trigger_below:
         problems.append("extract.llm_trigger_below 必须 ≥ 1（= 七项字段数时表示「缺一即触发兜底」）")

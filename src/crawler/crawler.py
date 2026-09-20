@@ -56,15 +56,20 @@ class PortalPageFetcher:
         self._cfg = cfg
         self._transport = transport if transport is not None else session.build_transport(cfg)
 
-    def fetch_list(self, page: int) -> List[ArticleRef]:
+    def fetch_list(self, page: int, search_value: str = "") -> List[ArticleRef]:
         """抓取第 ``page`` 页列表。
 
         两种模式（由 ``portal.mode`` 决定）：
           * ``api``  —— POST JSON 接口（实测本校门户属于这种）；
           * ``html`` —— 解析列表页 DOM。
+
+        ``search_value`` 仅用于**定向采集**（走门户服务端检索）；
+        留空时行为与全量采集完全一致，因此 ``PageFetcher`` 协议不受影响。
         """
         if self._cfg.portal.mode == "api":
-            return list_page.fetch_list_api(self._transport, self._cfg, page)
+            return list_page.fetch_list_api(
+                self._transport, self._cfg, page, search_value=search_value
+            )
         return list_page.fetch_list(self._transport, self._cfg, page)
 
     def fetch_detail(self, ref: ArticleRef) -> RawArticle:

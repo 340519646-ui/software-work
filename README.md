@@ -120,6 +120,13 @@ software-work/
 │   ├── pipeline/
 │   │   ├── pipeline.py       ✅ 三段式编排（唯一装配点，可注入假门户做离线测试）
 │   │   └── run.py            ✅ 命令行入口：--stage fetch/extract/export
+│   ├── search/               ← 检索层（零新增依赖：FTS5 + http.server 都是标准库/内建）
+│   │   ├── index.py          ✅ L3：FTS5 索引与检索（external-content，不复制正文）
+│   │   ├── cache.py          ✅ L1 进程内 LRU + L2 查询缓存（键含数据版本号）
+│   │   ├── service.py        ✅ L1→L2→L3 编排 + 关联词 + 采集建议（三道闸门）
+│   │   ├── fetcher.py        ✅ 定向采集：门户 searchValue 服务端检索 + 标题兜底过滤
+│   │   ├── server.py         ✅ Web 层：只监听 127.0.0.1 的 JSON API + 静态页面
+│   │   └── web/              ✅ 前端：index.html / style.css / app.js（原生 JS，零构建）
 │   └── main.py               ✅ 备用总入口（转交 CLI）
 │
 ├── tests/
@@ -134,7 +141,8 @@ software-work/
 │   ├── test_validation.py    ✅ 校验与统计
 │   ├── test_portal_api.py    ✅ 接口（JSON）模式列表采集（实测门户配置）
 │   ├── test_http_transport.py ✅ 传输层本地集成测试（127.0.0.1 真实 HTTP 往返）
-│   └── test_pipeline.py      ✅ 编排层（三阶段端到端、幂等、CLI 退出码）
+│   ├── test_pipeline.py      ✅ 编排层（三阶段端到端、幂等、CLI 退出码）
+│   └── test_search.py        ✅ 检索层（FTS/分词/三级缓存/采集闸门，42 项）
 │
 └── docs/
     ├── overview.md           ✅ 项目导读（新人解释文稿）
@@ -253,13 +261,32 @@ python -m src.pipeline.run --stage extract
 # ③ 存储校验：校验去重 → 入库 → 导出 CSV/Excel + 待人工清单 + 统计摘要
 python -m src.pipeline.run --stage export
 
-# 测试（277 项，覆盖率 85%）
+# 测试（335 项，覆盖率 78%）
 pytest -v --cov=src
 ```
 
 CLI 参数：`--stage`、`--config`、`--page-start`、`--page-end`、`--use-llm`/`--no-llm`、
 `--use-ocr`/`--no-ocr`、`--from-cache`、`--json`。
 退出码：`0` 成功、`1` 阶段有错误、`2` 参数错误、`3` 配置错误、`4` 登录态无效。
+
+### 6.1 检索服务（把结果变成可交互的查询）
+
+同一份 `data/employment.db` 也可以直接用网页检索（**只监听本机**）：
+
+```bash
+# 启动检索服务（默认 http://127.0.0.1:8765/）
+python -m src.search.server --open
+```
+
+* **类百度页面**：关键词检索 + 七项字段过滤 + 高亮片段 + 关联搜索；
+* **三级缓存**：L1 进程内 → L2 查询缓存（跨重启存活）→ L3 SQLite **FTS5** 全文检索；
+* **可溯源**：每条结果显示命中依据、字段完整度 n/7，以及"回原文核对"链接；
+* **有倾向性采集**：库内命中不足时可发起定向采集，走门户自带的 `searchValue`
+  服务端检索（只拉相关的几页）。**默认关闭**（`search.trigger_enabled`），
+  开启后仍受冷却时间与预算闸门约束，页面会先显示预估请求数与秒数。
+* **零新增依赖**：FTS5 与 `http.server` 都是标准库/内建扩展，`requirements.txt` 未增包。
+
+设计取舍、分词器实测结论与能力边界见 `docs/search.md`。
 
 ## 七、字段口径与两级抽取
 
@@ -366,7 +393,7 @@ pytest tests/test_contracts.py -v
 | 解析层 | `cleaner` + `rules` + `llm` + `ocr` + `extractor`（两级组装 + 内容寻址 OCR 缓存） | ✅ |
 | 采集层 | `session` + `list_page` + `detail_page` + `crawler` + `login_check` | ✅（门户参数待核对） |
 | 编排与 CLI | 三阶段 `pipeline` + `run.py` 退出码/覆盖参数 | ✅ |
-| 测试 | 277 项用例全绿，语句覆盖率 85% | ✅ |
+| 测试 | 335 项用例全绿，语句覆盖率 78% | ✅ |
 | 真实门户接入 | 可达性探测（SSO/sm2）契约 1.2.0；**接口模式**（POST JSON）1.3.0；**实测 `tables` 结构 + 站外链接策略** 1.4.0；**实测详情路由 `#/print`** | ✅（`comsys_random_t` 是否被校验、回显字段是否必需 2 项待确认，见 `docs/portal-probe.md` 第九节） |
 | 文档 | overview / architecture / implementation-plan / storage-decision / experiment / portal-probe | ✅ |
 

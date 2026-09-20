@@ -75,6 +75,13 @@ ALLOWED_PROJECT_IMPORTS: Dict[str, Set[str]] = {
     "src.storage": {"src.contracts", "src.config"},
     "src.validation": {"src.contracts", "src.config"},
     "src.pipeline": {"src.contracts", "src.config", "src.crawler", "src.parser", "src.storage", "src.validation"},
+    # 检索层：与 pipeline 同级的编排层（在其之上）。定向采集要复用 crawler 取详情、
+    # parser 抽字段、storage 入库、validation 校验，因此允许集合与 pipeline 一致；
+    # 刻意**不含** src.pipeline，以守住"任何层不得 import pipeline"的红线。
+    "src.search": {"src.contracts", "src.config", "src.crawler", "src.parser", "src.storage", "src.validation"},
+    # Web 层：**CLI 入口**，只做「HTTP → SearchService」映射，因此依赖面刻意比上面窄。
+    # 允许 src.search 是为了调用同层门面 build_search_service（同层不构成违规）。
+    "src.search.server": {"src.contracts", "src.config", "src.search"},
     "src.main": {"src.contracts", "src.config", "src.pipeline"},
 }
 
@@ -87,6 +94,11 @@ ALLOWED_THIRD_PARTY_IMPORTS: Dict[str, Set[str]] = {
     "src.storage": {"pandas", "openpyxl"},
     "src.validation": {"yaml", "pandas"},
     "src.pipeline": set(),
+    # 检索层只用标准库：FTS5 与查询缓存都基于内建 sqlite3，刻意不引入 Web 框架
+    # （后端用 http.server），这是"零新增依赖"这条项目取舍的直接结果。
+    # src.search 整体只用标准库：FTS5 与查询缓存基于内建 sqlite3，
+    # Web 层基于 http.server —— 这是"零新增依赖"这条项目取舍的直接结果。
+    "src.search": set(),
     "src.main": set(),
 }
 
@@ -94,13 +106,20 @@ STDLIB_MODULES: Set[str] = {
     "__future__", "abc", "argparse", "collections", "contextlib", "csv", "dataclasses",
     "datetime", "enum", "functools", "hashlib", "html", "io", "itertools", "json", "logging",
     "math", "os", "pathlib", "posixpath", "random", "re", "secrets", "shutil", "sqlite3", "string", "sys",
-    "tempfile", "time", "traceback", "typing", "unicodedata", "urllib", "uuid", "warnings",
+    "tempfile", "threading", "time", "traceback", "typing", "unicodedata", "urllib", "uuid", "warnings",
+    # Web 层（检索服务）用的标准库：http.server 是刻意的取舍——本服务只做
+    # 只读查询 + 一个后台采集作业，路由不到 10 条，引入 Web 框架会让
+    # requirements 多出十几个包却换不来实际收益（见 src/search/server.py 顶部说明）。
+    "http", "mimetypes", "webbrowser",
 }
 
 # 只允许这两处调用 load_config：CLI 入口与登录自检（其余模块必须靠参数注入）
 ALLOWED_LOAD_CONFIG_CALLERS: Set[str] = {
     "src/pipeline/run.py",
     "src/crawler/login_check.py",
+    # Web 服务是「用户直接运行」的入口（python -m src.search.server），
+    # 与 CLI 同类：只有入口才允许自己加载配置，其余模块一律靠参数注入。
+    "src/search/server.py",
 }
 
 

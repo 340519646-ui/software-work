@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>就业信息检索</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- 顶部：检索框。空查询时居中大尺寸（类搜索首页），有查询时收窄到顶部 -->
+  <header id="hero" class="hero">
+    <div class="hero-inner">
+      <h1 class="brand" id="brand">就业信息检索</h1>
+      <p class="tagline">门户就业信息结构化检索 · 七项字段可溯源 · 三级缓存</p>
+
+      <form id="search-form" class="search-box" autocomplete="off">
+        <input id="q" name="q" type="search" placeholder="输入关键词，如：北京 硕士 / 职点迷津 / 计算机"
+               aria-label="检索关键词" maxlength="120">
+        <button type="submit" id="submit-btn">搜索</button>
+      </form>
+
+      <div class="hints" id="hints">
+        <span class="hints-label">试试：</span>
+        <button class="chip" data-q="职点迷津">职点迷津</button>
+        <button class="chip" data-q="北京 硕士">北京 硕士</button>
+        <button class="chip" data-q="招聘会">招聘会</button>
+        <button class="chip" data-q="选调">选调</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 字段过滤：七项核心字段，任一填写即作为 AND 条件叠加 -->
+  <section class="filters" id="filters" hidden>
+    <form id="filter-form" class="filter-row">
+      <label>届别<input name="graduation_year" placeholder="如 2021"></label>
+      <label>年级<input name="grade" placeholder="如 应届"></label>
+      <label>学历<input name="degree" placeholder="如 硕士"></label>
+      <label>专业<input name="major" placeholder="如 汉语言文学"></label>
+      <label>城市<input name="city" placeholder="如 北京"></label>
+      <label>单位<input name="employer" placeholder="如 满分进出口"></label>
+      <label>岗位<input name="position" placeholder="如 总经理"></label>
+      <div class="filter-actions">
+        <button type="submit" class="btn-primary">应用过滤</button>
+        <button type="button" id="clear-filters" class="btn-ghost">清空</button>
+      </div>
+    </form>
+  </section>
+
+  <main class="layout">
+    <!-- 左侧：结果 -->
+    <section class="results-col">
+      <div class="result-meta" id="result-meta" hidden></div>
+      <div class="notice" id="notice" hidden></div>
+      <div id="suggestion" class="suggestion" hidden></div>
+      <ol class="results" id="results"></ol>
+      <div class="pager" id="pager" hidden>
+        <button id="prev-page" class="btn-ghost">上一页</button>
+        <span id="page-info"></span>
+        <button id="next-page" class="btn-ghost">下一页</button>
+      </div>
+      <div class="empty" id="empty" hidden>
+        <p class="empty-title">库内没有匹配的记录</p>
+        <p class="empty-sub">可以换关键词，或（在采集开关开启时）让系统去门户定向采集相关通知。</p>
+      </div>
+    </section>
+
+    <!-- 右侧：关联搜索 + 数据边界说明 -->
+    <aside class="side-col">
+      <div class="card" id="related-card" hidden>
+        <h2 class="card-title">关联搜索</h2>
+        <p class="card-note">来自本库真实字段值，点了必有结果</p>
+        <div class="related-list" id="related-list"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">数据来源与缓存</h2>
+        <dl class="stats" id="stats"></dl>
+        <p class="card-note" id="trigger-note"></p>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">合规说明</h2>
+        <ul class="compliance">
+          <li>只读低频，请求间隔 ≥ 2 秒（配置校验强制）</li>
+          <li>仅本人账号登录，实验结束清理会话</li>
+          <li>服务只监听本机 <code>127.0.0.1</code>，不对外提供</li>
+          <li>每条结果都可回原文核对（<code>source_url</code>）</li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <span>就业信息结构化抽取实验 · 检索层（SCHEMA_VERSION 1.5.0）</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

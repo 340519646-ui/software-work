@@ -174,6 +174,36 @@ storage:
   db_path: data/employment.db
   batch_size: 200
 
+# ---------- 检索与「有倾向性采集」（SCHEMA_VERSION 1.5.0 新增）----------
+search:
+  # Web 检索服务开关（关闭后 python -m src.search.server 拒绝启动）
+  enabled: true
+  # 【安全红线】检索服务会返回真实抓取内容，只允许绑本机回环地址，验证会强制拦截
+  host: "127.0.0.1"
+  port: 8765
+  # 单页上限（前端可用 ?limit= 覆盖，但不得超过 max_limit）
+  default_limit: 20
+  max_limit: 100
+  # L2 查询缓存有效期（秒）。数据写入后靠「版本号」立即失效，不依赖这个 TTL
+  cache_ttl_seconds: 300
+  # L2 缓存最多保留的查询条数（LRU 淘汰）
+  cache_max_rows: 2000
+  # L1 进程内缓存条数
+  l1_size: 128
+
+  # ---------- 缓存未命中时触发采集 ----------
+  # 【默认关闭】检索本身完全离线；开启后才会联网，且受下面三道闸门约束。
+  # 开启前的合规前提：request.interval_seconds ≥ 2、仅本人账号、实验结束清会话。
+  trigger_enabled: false
+  # 单次最多翻几页。每页 15 条 = 15 次详情请求，按 ≥2 秒/请求计约 32 秒
+  max_fetch_pages: 2
+  # 同一查询串的采集冷却时间（秒），防止连点把请求放大
+  fetch_cooldown_seconds: 900
+  # 预估耗时超过该值直接拒绝触发（预算闸门）
+  max_estimated_seconds: 120.0
+  # FTS5 分词器：trigram 让中文无需分词即可子串匹配（SQLite 内置，无新依赖）
+  fts_tokenizer: unicode61
+
 # ---------- 导出 ----------
 output:
   csv_path: data/processed/jobs.csv

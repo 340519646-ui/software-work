@@ -4,7 +4,7 @@
 docstring 是它的展开，`src/contracts.py` 是它的可执行形式，`tests/test_contracts.py`
 是它的自动检查。三者不一致时以本文档为准，并须同步修改另外两处。
 
-当前契约版本：`SCHEMA_VERSION = 1.1.0`（见 `src/contracts.py`）。
+当前契约版本：`SCHEMA_VERSION = 1.5.0`（见 `src/contracts.py`）。
 
 > **1.1.0 变更**：图片型数据成为一等公民——新增 `ImageAsset` / `ContentKind` / `OcrStatus`，
 > `RawArticle` 与 `ManifestEntry` 增加 `images`，`CleanArticle.source_kind`、`JobRecord.content_kind`，

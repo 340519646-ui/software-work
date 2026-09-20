@@ -388,13 +388,30 @@ def build_api_body(cfg: AppConfig, page: int, token: str = "") -> Dict[str, Any]
     return body
 
 
-def build_api_query(cfg: AppConfig, page: int, token: str = "") -> Dict[str, str]:
+def build_api_query(
+    cfg: AppConfig,
+    page: int,
+    token: str = "",
+    *,
+    search_value: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> Dict[str, str]:
     """按实测把分页与过滤参数摊平成**查询串参数**。
 
     服务端只认查询串（JSON 体被忽略），因此这里是让翻页与栏目过滤生效的关键。
     布尔值按小写字符串发送（``false``），避免被当成真值。
+
+    ``search_value`` 是**门户自带的服务端关键词检索**（配置里的 ``searchValue``），
+    定向采集靠它做到"只拉相关的几页"；留空则维持全量语义（向后兼容）。
     """
     params: Dict[str, Any] = dict(cfg.portal.api_body or {})
+    if search_value:
+        params["searchValue"] = str(search_value)
+    if start_date:
+        params["start_date"] = str(start_date)
+    if end_date:
+        params["end_date"] = str(end_date)
     params[cfg.portal.api_page_field or "currentPage"] = page
 
     if "start" in params or "end" in params:
@@ -421,14 +438,31 @@ def build_api_query(cfg: AppConfig, page: int, token: str = "") -> Dict[str, str
     return rendered
 
 
-def build_api_url(cfg: AppConfig, page: int, token: str = "") -> str:
+def build_api_url(
+    cfg: AppConfig,
+    page: int,
+    token: str = "",
+    *,
+    search_value: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
     """按 ``api_param_style`` 生成请求 URL（query 模式下把参数拼进查询串）。"""
     url = str(cfg.portal.api_url or "").strip()
     if not url:
         return url
     if cfg.portal.api_param_style != "query":
         return url
-    query = urlencode(build_api_query(cfg, page, token))
+    query = urlencode(
+        build_api_query(
+            cfg,
+            page,
+            token,
+            search_value=search_value,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    )
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}{query}"
 
@@ -559,16 +593,31 @@ def _normalize_date(value: str) -> str:
     return f"{matched.group(1)}-{int(matched.group(2)):02d}-{int(matched.group(3)):02d}"
 
 
-def fetch_list_api(transport: Transport, cfg: AppConfig, page: int) -> List[ArticleRef]:
+def fetch_list_api(
+    transport: Transport,
+    cfg: AppConfig,
+    page: int,
+    *,
+    search_value: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> List[ArticleRef]:
     """采集第 ``page`` 页：POST JSON → 解析 → ``ArticleRef`` 列表。
 
     分页口径与门户一致：**URL 不变**，靠请求体里的页码字段翻页。
+    ``search_value`` 非空时走门户的**服务端关键词检索**（定向采集用）。
     """
     url = str(cfg.portal.api_url or "").strip()
     if not url:
         raise ConfigError("portal.api_url 未配置：请填写列表接口地址（config/config.yaml 的 portal.api_url）")
 
-    request_url = build_api_url(cfg, page)
+    request_url = build_api_url(
+        cfg,
+        page,
+        search_value=search_value,
+        start_date=start_date,
+        end_date=end_date,
+    )
     body = build_api_body(cfg, page)
     # 实测：参数必须走查询串（request_url 里已带）；JSON 体仍发送但服务端忽略，
     # 保留它是为了换门户时无需改代码（api_param_style=json 时就用它）。

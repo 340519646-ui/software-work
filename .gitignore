@@ -36,6 +36,11 @@ data/.session*.json
 # 成果看板：由 scripts/make_report.py 从真实数据生成，不入库（含真实标题与链接）
 data/processed/*.html
 data/*.db
+# SQLite WAL 伴生文件：**含尚未落盘的真实抓取数据**，绝不能提交。
+# 检索层启用 WAL 后会在 data/ 下生成 -wal / -shm，只忽略 *.db 是不够的。
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
 data/*.sqlite
 data/*.sqlite3
 data/logs/

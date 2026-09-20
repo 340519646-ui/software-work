@@ -163,6 +163,53 @@ bash scripts/run_all.sh --stages extract,export
 
 ---
 
+## 6.5 检索服务（类百度页面 + 三级缓存）
+
+成果不必只看静态文件，也可以起一个**只监听本机**的检索服务：
+
+```bash
+# 启动（默认 http://127.0.0.1:8765/），加 --open 会自动开浏览器
+.venv/bin/python -m src.search.server
+.venv/bin/python -m src.search.server --port 8790 --open
+
+# 直接调 API（便于脚本化验证）
+curl -s "http://127.0.0.1:8765/api/stats"
+curl -s --get --data-urlencode "q=北京 硕士" "http://127.0.0.1:8765/api/search"
+curl -s "http://127.0.0.1:8765/api/search?q=%E6%8B%9B%E8%81%98&limit=5"
+```
+
+| 项 | 说明 |
+| --- | --- |
+| 监听地址 | **只允许 127.0.0.1 / localhost / ::1**（配置校验强制），对外监听会配置报错 |
+| 数据来源 | 现成的 `data/employment.db`（先跑 `--stages extract,export` 才有数据） |
+| 三级缓存 | L1 进程内 → L2 查询缓存表 → L3 FTS5；写入后靠**数据版本号**自动失效 |
+| 采集开关 | `search.trigger_enabled` **默认 false**：默认完全离线，不会发任何请求 |
+| 分词器 | 默认 `unicode61`（两字中文可搜）；改 `trigram` 可做子串匹配 |
+| 测试 | 检索层专项：`.venv/bin/python -m pytest tests/test_search.py -q` |
+
+**开启「缓存未命中就采集」前请先确认**（默认关闭，属于会真实发请求的动作）：
+
+```yaml
+search:
+  trigger_enabled: true      # 总开关
+  max_fetch_pages: 2         # 每页 15 条 → 31 次请求 ≈ 62 秒（按 ≥2 秒/请求算）
+  fetch_cooldown_seconds: 900
+```
+
+页面会把「预估请求数 / 预估秒数」显示出来再由用户确认，采集在**后台线程**跑
+（前端轮询进度），不会卡住页面。详见 `docs/search.md`。
+
+检索层排查：
+
+| 现象 | 处理 |
+| --- | --- |
+| 页面能开但搜不到东西 | `/api/stats` 看 `indexed_rows`；为 0 说明还没跑 extract |
+| 明明存在却搜不到（2 字词） | 检查 `search.fts_tokenizer` 是否被改成 `trigram` |
+| 改了匹配逻辑结果没变 | L2 缓存不会因改代码失效；清一次 `search_query_cache` 表即可 |
+| 采集按钮点不了 | `trigger_enabled=false` 或冷却中，页面会显示 `blocked_reason` |
+
+---
+
 ## 7. 退出码
 
 | 退出码 | 含义 | 怎么办 |
@@ -178,7 +225,7 @@ bash scripts/run_all.sh --stages extract,export
 ## 8. 跑测试
 
 ```bash
-.venv/bin/python -m pytest -q                       # 全量（290+ 项，约 12 秒）
+.venv/bin/python -m pytest -q                       # 全量（335 项，约 12 秒）
 .venv/bin/python -m pytest -q --cov=src             # 带覆盖率（当前 85%）
 .venv/bin/python -m pytest tests/test_portal_api.py -q   # 只跑接口模式相关
 ```

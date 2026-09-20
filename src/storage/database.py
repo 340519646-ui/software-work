@@ -23,7 +23,7 @@ from __future__ import annotations
 import csv
 import os
 import sqlite3
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 from src.config import AppConfig
 from src.contracts import (
@@ -40,11 +40,12 @@ from src.storage import models
 class SqliteRepository:
     """基于标准库 sqlite3 的仓库实现。"""
 
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(self, cfg: AppConfig, after_write: Optional[Callable[[], None]] = None) -> None:
         self._cfg = cfg
         self._conn: Optional[sqlite3.Connection] = None
         self._columns: Sequence[str] = tuple(cfg.columns)
         self._field_types: Dict[str, str] = {spec.name: spec.type for spec in cfg.fields}
+        self._after_write = after_write
 
     # ---------- 内部工具 ----------
 
@@ -87,6 +88,16 @@ class SqliteRepository:
 
     # ---------- 生命周期 ----------
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """暴露底层连接（只读用途：检索层需要它来建自己的 FTS 索引）。
+
+        为什么不让存储层自己维护索引：``src.storage`` 只允许依赖 contracts/config，
+        不允许反向依赖检索层（见 tests/test_contracts.py 的分层表）。
+        因此"索引怎么建、什么时候重建"由检索层决定，存储层只负责把连接交出去。
+        """
+        return self._connect()
+
     def init_schema(self) -> None:
         """建库建表建索引（幂等）。父目录不存在时自动创建。"""
         conn = self._connect()
@@ -94,6 +105,20 @@ class SqliteRepository:
         for statement in models.create_index_sql():
             conn.execute(statement)
         conn.commit()
+
+    def _ensure_index_text_column(self, conn) -> None:
+        """确保 ``index_text`` 派生列存在（供 FTS5 external-content 读取）。
+
+        用 ``ALTER TABLE ADD COLUMN`` 而不是 UNIQUE 约束：SQLite 不允许用
+        ``ALTER TABLE`` 添加 UNIQUE 列，所以派生列只能是普通列，唯一性由触发器维护。
+        """
+        existing = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{models.TABLE_NAME}")')}
+        if "index_text" in existing:
+            return
+        conn.execute(
+            f'ALTER TABLE "{models.TABLE_NAME}" ADD COLUMN "index_text" TEXT NOT NULL '
+            f"DEFAULT \x27\x27"
+        )
 
     def close(self) -> None:
         if self._conn is not None:
@@ -110,7 +135,12 @@ class SqliteRepository:
     # ---------- 写 ----------
 
     def upsert_many(self, records: Iterable[JobRecord]) -> int:
-        """批量 UPSERT（按 ``cfg.storage.batch_size`` 分批提交），返回写入行数。"""
+        """批量 UPSERT（按 ``cfg.storage.batch_size`` 分批提交），返回写入行数。
+
+        写完后递增**索引数据版本号**：这是 L1/L2 查询缓存的失效依据，
+        因此任何写路径（全量 extract、定向采集、人工回写）都会自动让缓存失效，
+        不需要调用方记得手工清缓存。
+        """
         conn = self._connect()
         sql = models.upsert_sql(self._columns)
         batch_size = max(1, int(self._cfg.storage.batch_size))
@@ -127,7 +157,22 @@ class SqliteRepository:
             conn.executemany(sql, pending)
             conn.commit()
             written += len(pending)
+        self._on_rows_written(written)
         return written
+
+    def _on_rows_written(self, written: int) -> None:
+        """写入完成后的钩子（当前只用于让检索层知道"该重建索引了"）。
+
+        存储层**不直接**碰检索层（分层约束）：改为调用一个可注入的回调。
+        未安装回调时是空操作，因此单独使用存储层（导出、测试）不受影响。
+        """
+        callback = self._after_write
+        if callback is None or not written:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - 索引维护失败不应让入库失败
+            pass
 
     def update_review_status(self, article_key: str, status: str) -> int:
         """人工复核回写：按 ``article_key`` 更新 ``review_status`` 列，返回受影响行数。"""
@@ -140,6 +185,7 @@ class SqliteRepository:
             (status, article_key),
         )
         conn.commit()
+        self._on_rows_written(cursor.rowcount)
         return cursor.rowcount
 
     # ---------- 读 ----------
@@ -235,6 +281,12 @@ class SqliteRepository:
         return len(records)
 
 
-def build_repository(cfg: AppConfig) -> RecordRepository:
-    """工厂：pipeline 的唯一入口，返回 ``SqliteRepository(cfg)``。"""
-    return SqliteRepository(cfg)
+def build_repository(
+    cfg: AppConfig, after_write: Optional[Callable[[], None]] = None
+) -> RecordRepository:
+    """工厂：pipeline 的唯一入口，返回 ``SqliteRepository(cfg)``。
+
+    ``after_write`` 供上层（检索层）挂"写入后重建索引"的回调；
+    不传时退化为纯存储，行为与历史版本一致。
+    """
+    return SqliteRepository(cfg, after_write=after_write)

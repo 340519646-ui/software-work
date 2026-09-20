@@ -63,7 +63,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Seque
 # 版本与全局常量
 # --------------------------------------------------------------------------
 
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.5.0"
 """契约版本。DTO 字段增删改时必须递增，并在 docs/architecture.md 记录变更。"""
 
 MISSING = "未知"
@@ -1072,6 +1072,230 @@ class RecordValidator(Protocol):
     """
 
     def validate(self, record: JobRecord) -> ValidationResult:
+        ...
+
+
+# --------------------------------------------------------------------------
+# 检索层契约（SCHEMA_VERSION 1.5.0 新增）
+#
+# 设计取舍：检索层**不新增表结构契约**给上游——它只读 articles 表并维护
+# 自己的一张 FTS5 索引表 + 一张查询缓存表（见 src/search/）。
+# 这里只定义「查询意图」与「命中结果」两个 DTO，保证前后端口径一致。
+# --------------------------------------------------------------------------
+
+
+MISSING_PLACEHOLDER_IS_NOT_INDEXED = True
+"""索引文本中**必须剔除**占位符「未知」。
+
+理由：七项字段缺失时一律填「未知」，若把它写进 FTS 索引，则任何查询都会
+因为命中这个占位符而产生全表噪声；实测真实库 30 条记录几乎每条都含「未知」，
+不剔除会让相关性排序彻底失效。
+"""
+
+
+@dataclass(frozen=True)
+class SearchQuery:
+    """一次检索请求（用户意图的规范化载体）。
+
+    纯数据、不可变：由 Web 层从查询串构造，检索层只消费不修改。
+    """
+
+    keywords: Tuple[str, ...] = ()
+    fields: Mapping[str, str] = field(default_factory=dict)
+    limit: int = 20
+    offset: int = 0
+    want_fetch: bool = False
+    """缓存未命中时是否允许触发定向采集。**默认 False**：采集是联网且受
+    2 秒/请求红线约束的动作，必须由调用方显式开启。"""
+
+    raw_text: str = ""
+    """用户原始输入（仅用于回显与建议，不参与匹配）。"""
+
+    def is_empty(self) -> bool:
+        """没有任何检索条件（空查询）。"""
+        return not self.keywords and not self.fields
+
+    def normalized_key(self) -> str:
+        """稳定的缓存键来源：字段序无关、关键词序无关，保证等价查询命中同一缓存。"""
+        payload = {
+            "kw": sorted(self.keywords),
+            "fields": {k: str(v) for k, v in sorted(self.fields.items()) if str(v).strip()},
+            "limit": int(self.limit),
+            "offset": int(self.offset),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """单条命中结果（前端直接渲染这个结构）。
+
+    ``snippet`` 是带高亮的正文片段（HTML 片段，命中词用 ``<em>`` 包裹）；
+    ``source_url`` 与 ``raw_html_path`` 保证可溯源——这是本项目的红线，
+    检索结果同样不得例外。
+    """
+
+    article_key: str
+    title: str
+    source_url: str
+    raw_html_path: str = ""
+    publish_date: str = ""
+    score: float = 0.0
+    snippet: str = ""
+    highlights: Tuple[str, ...] = ()
+    """本条的命中依据（如 ``标题``、``单位``、``正文``），前端显示为标签。"""
+
+    fields: Mapping[str, str] = field(default_factory=dict)
+    """七项核心字段（缺失仍为「未知」，前端据此显示「待补充」）。"""
+
+    def complete_field_count(self) -> int:
+        """七项字段中已知的个数（0~7），供前端显示完整度。"""
+        return sum(
+            1 for name in CORE_FIELDS if str(self.fields.get(name, MISSING)) not in ("", MISSING)
+        )
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """一次检索的完整应答（缓存与 API 都传输这个结构）。"""
+
+    query: SearchQuery
+    hits: Tuple[SearchHit, ...] = ()
+    total: int = 0
+    index_version: int = 0
+    """索引数据版本号：写入数据后自动递增，并随缓存键参与失效判定。"""
+
+    source: str = "empty"
+    """结果来源：``l1``（进程内）/ ``l2``（查询缓存）/ ``l3``（库内检索）/ ``empty``。"""
+
+    elapsed_ms: float = 0.0
+    suggestion: Optional["SearchSuggestion"] = None
+    related: Tuple[str, ...] = ()
+    """关联词建议（从已入库语料的真实字段值按频次召回）。
+
+    与 ``suggestion``（采集建议）不同：这是**搜索结果的补充维度**，
+    让用户能顺着"数据里真实存在的词"继续探索，而不是碰运气改关键词。
+    """
+
+    def to_json(self) -> Dict[str, Any]:
+        """转成 API 应答（前端契约，字段名不随实现变化）。"""
+        return {
+            "total": int(self.total),
+            "source": self.source,
+            "elapsed_ms": round(float(self.elapsed_ms), 2),
+            "index_version": int(self.index_version),
+            "suggestion": self.suggestion.to_json() if self.suggestion else None,
+            "related": list(self.related),
+            "hits": [
+                {
+                    "article_key": hit.article_key,
+                    "title": hit.title,
+                    "source_url": hit.source_url,
+                    "publish_date": hit.publish_date,
+                    "score": round(float(hit.score), 4),
+                    "snippet": hit.snippet,
+                    "highlights": list(hit.highlights),
+                    "fields": {name: str(hit.fields.get(name, MISSING)) for name in CORE_FIELDS},
+                    "complete_field_count": hit.complete_field_count(),
+                }
+                for hit in self.hits
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class SearchSuggestion:
+    """缓存未命中时的采集建议——**执行与否由用户决定**，不由后端擅自发起。
+
+    ``estimated_seconds`` 是诚实估算：请求数 × 合规间隔（≥2 秒），
+    让用户在接受「等待 30 秒」之前就知道代价。
+    """
+
+    reason: str = ""
+    """为什么建议采集，例如「库内命中 0 条」或「库内命中少于请求量」。"""
+
+    search_value: str = ""
+    """要用门户服务端检索的原始查询串（对应门户接口的 searchValue）。"""
+
+    estimated_requests: int = 0
+    estimated_seconds: float = 0.0
+    allowed: bool = False
+    """"当前是否允许触发（受冷却时间与单次预算约束）。"""
+
+    blocked_reason: str = ""
+    """不允许触发时的原因（如「该查询 12 分钟前刚采集过」）。"""
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "reason": self.reason,
+            "search_value": self.search_value,
+            "estimated_requests": int(self.estimated_requests),
+            "estimated_seconds": round(float(self.estimated_seconds), 1),
+            "allowed": bool(self.allowed),
+            "blocked_reason": self.blocked_reason,
+        }
+
+
+@dataclass(frozen=True)
+class FetchJob:
+    """一次「定向采集」作业的状态（后台线程执行，前端轮询它）。"""
+
+    job_id: str
+    query_key: str = ""
+    search_value: str = ""
+    state: str = "pending"
+    """``pending`` | ``running`` | ``done`` | ``failed`` | ``skipped``"""
+
+    pages_fetched: int = 0
+    refs_found: int = 0
+    details_ok: int = 0
+    details_failed: int = 0
+    records_inserted: int = 0
+    message: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "state": self.state,
+            "search_value": self.search_value,
+            "pages_fetched": int(self.pages_fetched),
+            "refs_found": int(self.refs_found),
+            "details_ok": int(self.details_ok),
+            "details_failed": int(self.details_failed),
+            "records_inserted": int(self.records_inserted),
+            "message": self.message,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        }
+
+
+@runtime_checkable
+class SearchIndex(Protocol):
+    """检索索引接口，由 ``src/search/index.py`` 实现。
+
+    职责边界：只做「索引维护 + 检索 + 计数」，**不解析 HTML、不调 LLM、不发请求**。
+    数据写入由 ``RecordRepository`` 负责，索引通过版本号感知变更。
+    """
+
+    def index_version(self) -> int:
+        """当前索引数据版本号（写入数据后递增）。"""
+        ...
+
+    def rebuild(self) -> int:
+        """全量重建索引，返回被索引的记录数（幂等）。"""
+        ...
+
+    def search(self, query: SearchQuery) -> SearchResult:
+        ...
+
+    def count_matching(self, query: SearchQuery) -> int:
+        """只数不取（用于判断"库内是否够用"以决定要不要采集）。"""
+        ...
+
+    def suggest_related(self, keywords: Sequence[str], limit: int = 8) -> List[str]:
+        """关联词建议（从已入库语料的词表中召回，用于「关联搜索」）。"""
         ...
 
 
