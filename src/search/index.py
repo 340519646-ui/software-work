@@ -338,7 +338,8 @@ class FtsSearchIndex:
         existing = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (FTS_TABLE,)
         ).fetchone()
-        if existing is not None and self._tokenizer not in str(existing["sql"] or ""):
+        existing_sql = "" if existing is None else str(self._cell(existing, "sql", 0) or "")
+        if existing is not None and self._tokenizer not in existing_sql:
             # 分词器换过（例如 unicode61 → trigram）：旧倒排索引无法复用，直接重建
             conn.execute(f'DROP TABLE IF EXISTS "{FTS_TABLE}"')
             conn.execute(sql)
@@ -361,9 +362,35 @@ class FtsSearchIndex:
         for name in LEGACY_TRIGGERS:
             self.conn.execute(f'DROP TRIGGER IF EXISTS "{name}"')
 
+    @staticmethod
+    def _cell(row: Any, key: str, index: int) -> Any:
+        """从一行里取值，**兼容 Row 与 tuple 两种连接配置**。
+
+        不能假设外部注入的连接设置了 ``row_factory``：
+        ``sqlite3.connect()`` 默认返回 tuple，此时 ``row["sql"]`` 会抛
+        ``TypeError: tuple indices must be integers``。
+        检索层被存储层和脚本以"传入连接"的方式复用，所以必须两种都能读。
+        """
+        try:
+            return row[key]
+        except (TypeError, IndexError, KeyError):
+            return row[index]
+
+    @staticmethod
+    def _rows_to_dicts(cursor: sqlite3.Cursor) -> List[Dict[str, Any]]:
+        """把游标结果转成 dict 列表，**兼容 Row 与 tuple 两种连接配置**。
+
+        ``dict(row)`` 只在 row_factory=Row 时可用；默认连接返回 tuple，
+        此时 ``dict(tuple)`` 会抛
+        ``ValueError: dictionary update sequence element #0 has length N; 2 is required``。
+        因此统一用游标的 ``description`` 拿列名再 zip。
+        """
+        names = [str(column[0]) for column in (cursor.description or [])]
+        return [dict(zip(names, row)) for row in cursor.fetchall()]
+
     def articles_columns(self) -> List[str]:
         rows = self.conn.execute("PRAGMA table_info(articles)").fetchall()
-        return [str(row["name"]) for row in rows]
+        return [str(self._cell(row, "name", 1)) for row in rows]
 
     # ---------- 版本 ----------
 
@@ -375,7 +402,7 @@ class FtsSearchIndex:
         except sqlite3.OperationalError:
             return 0
         try:
-            return int(row["value"]) if row else 0
+            return int(self._cell(row, "value", 0)) if row else 0
         except (TypeError, ValueError):
             return 0
 
@@ -528,7 +555,8 @@ class FtsSearchIndex:
             sql += ' ORDER BY score ASC, a."crawl_time" DESC LIMIT ? OFFSET ?'
             params.extend([limit, offset])
             try:
-                rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+                cursor = conn.execute(sql, params)
+                rows = self._rows_to_dicts(cursor)
             except sqlite3.OperationalError as exc:
                 raise StorageError(f"检索失败（SQLite）：{exc}") from exc
             if rows:
@@ -565,7 +593,7 @@ class FtsSearchIndex:
         sql += ' ORDER BY a."crawl_time" DESC, a."source_url" ASC LIMIT ? OFFSET ?'
         params = list(field_params) + list(like_params) + [limit, offset]
         try:
-            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+            return self._rows_to_dicts(conn.execute(sql, params))
         except sqlite3.OperationalError as exc:
             raise StorageError(f"检索失败（SQLite）：{exc}") from exc
 
@@ -653,7 +681,7 @@ class FtsSearchIndex:
                 (MISSING,),
             ).fetchall()
             for row in rows:
-                value = str(row["v"]).strip()
+                value = str(self._cell(row, "v", 0)).strip()
                 if not value or value == MISSING or value.lower() in wanted:
                     continue
                 counter[value] = counter.get(value, 0) + int(row["n"])

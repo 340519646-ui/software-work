@@ -22,7 +22,7 @@ import pytest
 from src.contracts import ArticleRef, HttpResponse, RawArticle
 from src.crawler.crawler import PortalPageFetcher
 from src.search.index import FtsSearchIndex
-from src.search.service import normalize_query
+from src.search.service import build_search_service, normalize_query
 from src.storage.database import build_repository
 from tests.conftest import FIXTURES, MUC_API_URL, MUC_DETAIL_TEMPLATE, FakeTransport
 
@@ -125,11 +125,18 @@ def _fetcher_factory(transport):
     return lambda cfg: PortalPageFetcher(cfg, transport)
 
 
-def _run(api_cfg, transport, query_text, extra=None):
-    """跑一次定向采集，返回 (counters, repository, index)。"""
+def _run(api_cfg, transport, query_text, extra=None, login_checker=None):
+    """跑一次定向采集，返回 (counters, repository, index)。
+
+    默认注入**放行**的登录门禁：本文件全程离线，绝不能真的去登录门户。
+    需要验证门禁本身时用 ``login_checker`` 传一个会抛 ``LoginError`` 的替身。
+    """
     from src.search.fetcher import run_targeted_fetch
     from src.parser.extractor import build_extractor
     from src.validation.validator import build_validator
+
+    if login_checker is None:
+        login_checker = lambda cfg: None  # noqa: E731 - 测试替身：放行
 
     repo_holder = {}
 
@@ -156,6 +163,7 @@ def _run(api_cfg, transport, query_text, extra=None):
         extractor_factory=build_extractor,
         validator_factory=build_validator,
         repository_factory=repo_factory,
+        login_checker=login_checker,
     )
     return counters, repo, index
 
@@ -167,7 +175,7 @@ def test_search_value_is_sent_to_the_portal(api_cfg, portal) -> None:
     assert portal.list_queries, "列表接口必须被请求过"
     first = portal.list_queries[0]
     assert first.get("searchValue") == ["职点迷津"], (
-        f"searchValue 没有下发或值不对：{first.get('searchValue')}"
+        f"首个 request 应先试最长候选，实际 {first.get('searchValue')}"
     )
     assert first.get("type") == ["10"], "栏目过滤必须保留"
 
@@ -223,6 +231,7 @@ def test_repeat_fetch_is_idempotent(api_cfg) -> None:
 def test_max_fetch_pages_bounds_the_number_of_list_requests(api_cfg, portal) -> None:
     """预算闸门的落地形式：单次采集最多翻 max_fetch_pages 页。"""
     counters, _, _ = _run(api_cfg, portal, "职点迷津", extra={"max_fetch_pages": 1})
+    # 假门户第 1 个候选就有结果 → 只翻 1 页
     assert counters["pages_fetched"] == 1
 
     transport = TargetedTransport([_record("1001", "职点迷津校友分享会")])
@@ -245,3 +254,131 @@ def test_archive_and_manifest_written_for_offline_replay(api_cfg, portal) -> Non
     assert lines, "清单不能为空"
     entry = json.loads(lines[0])
     assert entry["detail_url"].startswith("https://my.muc.edu.cn/")
+
+
+# ==========================================================================
+# 登录门禁（用户实际踩到的坑：未登录 → 门户返回登录页 HTML → 误报成"不是合法 JSON"）
+# ==========================================================================
+
+
+def test_login_gate_blocks_crawl_before_any_request(api_cfg, portal) -> None:
+    """门禁失败时**一个门户请求都不许发**，且异常必须是 LoginError。"""
+    from src.contracts import LoginError
+
+    def deny(cfg):
+        raise LoginError("会话已过期，请重新登录")
+
+    with pytest.raises(LoginError):
+        _run(api_cfg, portal, "职点迷津", login_checker=deny)
+
+    assert portal.requests == [], "门禁失败后不得再向门户发任何请求"
+    assert portal.list_queries == [], "连列表接口都不该请求"
+
+
+def test_login_gate_runs_before_list_request(api_cfg, portal) -> None:
+    """门禁必须在列表请求**之前**执行（顺序错了就等于没设门禁）。"""
+    order = []
+
+    def recording_checker(cfg):
+        order.append("login")
+
+    original_post = portal.post_json
+
+    def spy_post(url, payload, *, referer=""):
+        order.append("list")
+        return original_post(url, payload, referer=referer)
+
+    portal.post_json = spy_post
+    _run(api_cfg, portal, "职点迷津", login_checker=recording_checker)
+
+    assert order[:2] == ["login", "list"], f"门禁必须先于列表请求，实际顺序：{order}"
+
+
+def test_service_request_fetch_refuses_without_login(cfg) -> None:
+    """服务层：没有登录态时立刻拒绝，不启动后台作业、不消耗冷却。"""
+    from dataclasses import replace
+
+    from src.contracts import LoginError
+
+    # 必须先打开总开关：request_fetch 的顺序是
+    # 总开关 → 空查询 → **登录门禁** → 冷却，开关关着就到不了门禁
+    enabled = replace(cfg, search=replace(cfg.search, trigger_enabled=True))
+    service = build_search_service(enabled)
+    service._login_checker = lambda cfg: (_ for _ in ()).throw(LoginError("未登录"))
+
+    job = service.request_fetch(normalize_query("北京", enabled, limit=5))
+    assert job.job_id == "", "不应创建作业"
+    assert job.state == "skipped"
+    assert "登录" in job.message, f"消息应指出登录问题，实际：{job.message}"
+    assert "login_check" in job.message, "应给出可执行的修复指引"
+
+    # 冷却不应被消耗：修好登录态后应能立刻采集
+    assert service.cooldown_remaining("北京") == 0, "被门禁拦下不该消耗冷却额度"
+    service._index.close()
+
+
+# ==========================================================================
+# 下发给门户的关键词选择（实测规则，见 fetcher.portal_query_of 文档）
+# ==========================================================================
+
+
+def test_portal_candidates_are_whole_segments_then_suffixes(cfg) -> None:
+    """候选必须是**标点切出的整段**，再逐位取短后缀。
+
+    反面教训：曾把「职点迷津」截成「职点迷」——正好跨在语料的引号
+    （「“职”点迷津」）上，那个片段根本不存在，0 召回，比整串下发还糟。
+    """
+    from src.search.fetcher import portal_candidates_of, portal_query_of
+
+    candidates = portal_candidates_of(normalize_query("职点迷津", cfg))
+    assert candidates[0] == "职点迷津", "首选是完整整段"
+    assert "点迷津" in candidates, "必须包含跨过引号的短后缀候选"
+    assert "迷津" in candidates
+    assert "职点迷" not in candidates, "不得生成跨标点的任意截断"
+
+    assert portal_query_of(normalize_query("北京 硕士", cfg)) in ("北京", "硕士")
+    # 带标点时按整段切分，长段优先
+    assert portal_query_of(normalize_query("选调、北京、招聘会", cfg)) == "招聘会"
+    assert portal_query_of(normalize_query("“职”点迷津", cfg)) == "点迷津", (
+        "用户自带引号时，切出具在语料里真实存在的整段"
+    )
+
+
+def test_portal_query_avoids_single_char_when_possible(cfg) -> None:
+    """实测单字查询会返回整页未过滤结果，因此优先长度 ≥2 的连续片段。"""
+    from src.search.fetcher import portal_query_of
+
+    assert portal_query_of(normalize_query("职 招聘", cfg)) == "招聘", "应跳过单字，取 2 字片段"
+    # 输入里只有单字时仍要返回它（好过完全不过滤）
+    assert portal_query_of(normalize_query("职", cfg)) == "职"
+    # 纯标点/空格 → 没有可用的连续片段 → 返回空串（不做服务端过滤）
+    assert portal_query_of(normalize_query("、；。", cfg)) == ""
+
+
+def test_fallback_terms_are_not_stricter_than_the_portal_query(cfg) -> None:
+    """兜底过滤必须与门户召回同口径，否则会出现"门户给了、我们全丢"。"""
+    from src.search.fetcher import fallback_terms_of, portal_query_of
+
+    query = normalize_query("北京 硕士", cfg)
+    terms = fallback_terms_of(query)
+    assert portal_query_of(query) in terms, "门户查询词必须在过滤词集合里"
+    # 反向约束：过滤集合不得包含门户召回用的关键词之外的东西（否则会误杀召回结果）
+    assert terms == [portal_query_of(query)]
+
+    # 兜底过滤必须能接受"实际生效的关键词"，而不是永远盯着首选词
+    assert fallback_terms_of(normalize_query("职点迷津", cfg), "迷津") == ["迷津"], (
+        "过滤词应跟随实际生效的关键词，否则会把门户召回的结果全丢掉"
+    )
+    assert fallback_terms_of(normalize_query("职点迷津", cfg)) == ["职点迷津"]
+
+
+def test_crawl_uses_the_single_token_for_search_value(api_cfg, portal) -> None:
+    """端到端：多词查询下发给门户的 searchValue 必须是单个词元，而不是整串。"""
+    _run(api_cfg, portal, "职点迷津 分享", login_checker=lambda cfg: None)
+    assert portal.list_queries, "列表接口必须被请求过"
+    sent = portal.list_queries[0].get("searchValue")
+    assert sent is not None, "searchValue 必须下发"
+    assert len(sent) == 1, f"应只下发一个词元，实际下发 {sent}"
+    assert sent[0] in ("职点迷津", "分享", "点迷津", "迷津"), (
+        f"下发词元应是候选之一，实际 {sent}"
+    )

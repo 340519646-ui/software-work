@@ -34,6 +34,7 @@ from src.config import AppConfig
 from src.contracts import (
     CORE_FIELDS,
     FetchJob,
+    PipelineError,
     SearchQuery,
     SearchResult,
     SearchSuggestion,
@@ -88,6 +89,7 @@ class SearchService:
         extractor_factory: Optional[Callable[[AppConfig], Any]] = None,
         validator_factory: Optional[Callable[[AppConfig], Any]] = None,
         repository_factory: Optional[Callable[[AppConfig], Any]] = None,
+        login_checker: Optional[Callable[[AppConfig], None]] = None,
     ) -> None:
         self._cfg = cfg
         self._index = index
@@ -102,6 +104,7 @@ class SearchService:
         self._extractor_factory = extractor_factory
         self._validator_factory = validator_factory
         self._repository_factory = repository_factory
+        self._login_checker = login_checker
         self._jobs: Dict[str, FetchJob] = {}
         self._jobs_lock = threading.Lock()
 
@@ -288,6 +291,20 @@ class SearchService:
         if not search_value.strip():
             return FetchJob(job_id="", state="skipped", message="空查询不触发采集")
 
+        # 登录门禁放在**后台线程之前、冷却计时之前**：
+        # 没有登录态就该立刻告诉用户（并引导去跑 login_check），
+        # 而不是让用户等一分钟拿到一个后台失败，还把冷却额度白白用掉。
+        try:
+            (self._login_checker or self._default_login_check)(cfg)
+        except PipelineError as exc:
+            logger.warning("定向采集被登录门禁拦下：%s", exc)
+            return FetchJob(
+                job_id="",
+                search_value=search_value,
+                state="skipped",
+                message=f"登录态无效：{exc}；请先执行 python -m src.crawler.login_check",
+            )
+
         remaining = self.cooldown_remaining(search_value)
         if remaining > 0:
             return FetchJob(
@@ -403,7 +420,18 @@ class SearchService:
             extractor_factory=self._extractor_factory,
             validator_factory=self._validator_factory,
             repository_factory=self._repository_factory,
+            login_checker=self._login_checker,
         )
+
+    def _default_login_check(self, cfg: AppConfig) -> None:
+        """默认登录门禁：延迟导入，避免未装 playwright 时服务起不来。
+
+        ``SearchService._default_login_check`` 本身是**同步**调用（会真实登录并落盘会话），
+        但只在 request_fetch 里被调用一次；真实采集仍在后台线程跑。
+        """
+        from src.crawler.login_check import require_login
+
+        require_login(cfg)
 
     # ---------- 运维视图 ----------
 

@@ -535,13 +535,50 @@ def build_detail_url(record: Mapping[str, Any], cfg: AppConfig) -> str:
     return "" if missing else url
 
 
+def looks_like_html(text: str) -> bool:
+    """响应体是否明显是 HTML 文档（而不是 JSON）。
+
+    这是判断"登录态失效"的关键信号：未登录时门户对接口请求返回
+    **HTTP 200 + 统一身份认证登录页**，而不是 401/302。
+    仅凭状态码无法发现，只能看响应体。
+    """
+    head = str(text or "").lstrip()[:200].lower()
+    return head.startswith(("<!doctype html", "<html", "<?xml")) or "</html>" in str(text or "").lower()
+
+
 def parse_list_json(payload_text: str, api_url: str, cfg: AppConfig) -> List[ArticleRef]:
-    """解析接口返回的 JSON 列表（纯函数，便于单测）。"""
+    """解析接口返回的 JSON 列表（纯函数，便于单测）。
+
+    失败时区分两种原因，因为处理方式完全不同：
+
+    * **响应是 HTML** → 基本可以断定登录态失效（门户返回登录页而不是 JSON），
+      错误信息直接把这一条放在最前面，并附上命中的登录页特征词；
+    * 响应既不是 HTML 也不是合法 JSON → 才是接口结构/地址问题。
+    """
+    from src.crawler.session import LOGIN_FORM_MARKERS  # 登录页特征词（同一层内的常量）
+
+    if looks_like_html(payload_text):
+        lowered = str(payload_text or "").lower()
+        matched = [m for m in LOGIN_FORM_MARKERS if m.lower() in lowered]
+        hint = (
+            "门户返回的是**登录页 HTML**（HTTP 200），说明登录态已失效或从未登录"
+            if matched
+            else "门户返回的是 HTML 而不是 JSON"
+        )
+        raise ParseError(
+            f"列表接口未返回 JSON：{hint}。"
+            "请先执行 `python -m src.crawler.login_check` 重新登录（会自动落盘会话），"
+            "再重试采集。",
+            url=api_url,
+            detail=f"登录页特征={matched[:3]}；payload 开头={str(payload_text)[:120]!r}",
+        )
+
     try:
         payload = json.loads(payload_text or "")
     except (ValueError, TypeError) as exc:
         raise ParseError(
-            "列表接口返回的不是合法 JSON：请核对 api_url 与登录态是否有效",
+            "列表接口返回的不是合法 JSON：请核对 api_url 是否正确、"
+            "以及接口参数是否仍与门户一致（若登录态刚过期，请先跑 login_check）",
             url=api_url,
             detail=f"{exc}; payload={str(payload_text)[:200]!r}",
         ) from exc

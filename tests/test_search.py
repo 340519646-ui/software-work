@@ -406,3 +406,34 @@ def test_request_fetch_estimates_cost_honestly(cfg) -> None:
     assert suggestion.estimated_requests == expected_requests
     assert suggestion.estimated_seconds >= expected_requests * 2.0
     service._index.close()
+
+
+def test_index_works_with_a_plain_tuple_connection(cfg) -> None:
+    """回归：外部注入的连接可能没有 row_factory=Row，索引层不得假定是 Row。
+
+    实际故障：``sqlite3.connect()`` 默认返回 tuple，
+    在 ``_create_fts_table`` 里读 ``row["sql"]`` 直接抛
+    ``TypeError: tuple indices must be integers or slices, not str``。
+    """
+    import sqlite3 as plain_sqlite
+
+    from src.storage.database import build_repository
+
+    repo = build_repository(cfg)
+    repo.init_schema()
+
+    # 故意用**默认** row_factory（tuple）另开一条连接
+    raw = plain_sqlite.connect(str(cfg.path(cfg.storage.db_path)))
+    assert raw.row_factory is None, "前提：这条连接返回 tuple"
+
+    engine = FtsSearchIndex(connection=raw)
+    engine.init_schema()          # 曾在此处崩溃
+    assert engine.articles_columns(), "应能读到列名"
+    assert engine.index_version() >= 0
+
+    repo.upsert_many([_record("甲 招聘公告", "https://e.cn/1", city="北京")])
+    engine.rebuild()
+    result = engine.search(SearchQuery(keywords=("招聘",), raw_text="招聘", limit=5))
+    assert result.total == 1, "tuple 连接下检索也必须正常"
+    raw.close()
+    repo.close()
