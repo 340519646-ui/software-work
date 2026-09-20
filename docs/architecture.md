@@ -51,6 +51,7 @@ docstring 是它的展开，`src/contracts.py` 是它的可执行形式，`tests
 | `src.storage` | `contracts`、`config` | `pandas`、`openpyxl` |
 | `src.validation` | `contracts`、`config` | `yaml`、`pandas` |
 | `src.pipeline` | 上面全部层 | 无 |
+| `src.search` | `contracts`、`config`、`crawler`、`parser`、`storage`、`validation` | 无（含 Web 层） |
 | `src.main` | `contracts`、`config`、`pipeline` | 无 |
 
 **四条硬性禁令**（违反即测试失败）：
@@ -59,8 +60,15 @@ docstring 是它的展开，`src/contracts.py` 是它的可执行形式，`tests
    采集与解析必须能各自独立测试。
 2. 任何层不得 import `pipeline` / `main`（依赖只能向下，不能向上）。
 3. `contracts` 不得 import 项目内任何模块，也不得 import 第三方库。
-4. 除 `src/pipeline/run.py` 与 `src/crawler/login_check.py`（CLI 入口）外，
-   **任何模块不得调用 `load_config`**——配置必须由参数注入（`AppConfig`）。
+4. 除 `src/pipeline/run.py`、`src/crawler/login_check.py` 与 `src/search/server.py`
+   （均为 CLI/服务入口）外，**任何模块不得调用 `load_config`**——
+   配置必须由参数注入（`AppConfig`）。
+5. **检索层与 pipeline 同级，且不得 import pipeline**：定向采集需要复用
+   crawler/parser/storage/validation，因此允许集合与 pipeline 相同；
+   但必须保持"依赖只能向下"这条红线。
+6. **storage 不得反向依赖 search**：索引怎么建、什么时候重建由检索层决定，
+   存储层只把连接交出去（`SqliteRepository.connection`），并通过可注入回调
+   `after_write` 通知"写完该维护索引了"。
 
 ---
 
@@ -72,6 +80,7 @@ pipeline 只认门面，不 import 层的内部文件；层内部文件之间可
 | --- | --- | --- | --- |
 | 采集 | `crawler.build_fetcher(cfg)` | `contracts.PageFetcher` | `src/crawler/crawler.py` |
 | 解析 | `parser.build_extractor(cfg)` | `contracts.ArticleExtractor` | `src/parser/extractor.py` |
+| 检索 | `search.build_search_service(cfg)` | `search.SearchService`（`contracts.SearchIndex`） | `src/search/service.py` |
 | 校验 | `validation.build_validator(cfg)` | `contracts.RecordValidator` | `src/validation/validator.py` |
 | 存储 | `storage.build_repository(cfg)` | `contracts.RecordRepository` | `src/storage/database.py` |
 | 编排 | `pipeline.build_pipeline(cfg)` | `contracts.StageRunner` | `src/pipeline/pipeline.py` |
