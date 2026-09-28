@@ -51,6 +51,17 @@ data/logs/
 *.tmp
 tmp/
 
+# ===== AI 编码工具产物（与本课程交付无关，个人环境配置） =====
+# hallmark 设计技能：第三方技能包，体积大且与项目无关
+.agents/
+.claude/
+.hallmark/
+skills-lock.json
+# 其它常见 agent 技能目录
+.cursor/
+.aider*
+.continue/
+
 # ===== 编辑器 / 操作系统 =====
 .idea/
 .vscode/
