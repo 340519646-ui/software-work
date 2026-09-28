@@ -8,16 +8,36 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <!-- 顶部：检索框。空查询时居中大尺寸（类搜索首页），有查询时收窄到顶部 -->
+  <nav class="site-nav glass" aria-label="页内导航">
+    <a class="nav-brand" href="#hero">就业信息检索</a>
+    <div class="nav-links">
+      <a href="#hero">数据检索</a>
+      <a href="#filters">字段过滤</a>
+      <a href="#data-source">数据来源</a>
+      <a href="#compliance">合规说明</a>
+    </div>
+    <div class="nav-tail">
+      <span class="last-crawl">最近采集<br>2026-09-22</span>
+      <a class="quick-search" href="#q" aria-label="快速检索">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 4.5 4.5"></path></svg>
+      </a>
+    </div>
+  </nav>
+
+  <!-- 顶部：检索框。空查询时居中大尺寸，有查询时收窄到顶部 -->
   <header id="hero" class="hero">
     <div class="hero-inner">
+      <p class="hero-kicker">中央民族大学 · 就业信息档案</p>
       <h1 class="brand" id="brand">就业信息检索</h1>
-      <p class="tagline">门户就业信息结构化检索 · 七项字段可溯源 · 三级缓存</p>
+      <p class="tagline">中央民族大学信息门户历年选调生去向查询网站</p>
 
-      <form id="search-form" class="search-box" autocomplete="off">
+      <form id="search-form" class="search-box glass" autocomplete="off">
+        <span class="search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 4.5 4.5"></path></svg>
+        </span>
         <input id="q" name="q" type="search" placeholder="输入关键词，如：北京 硕士 / 职点迷津 / 计算机"
                aria-label="检索关键词" maxlength="120">
-        <button type="submit" id="submit-btn">搜索</button>
+        <button type="submit" id="submit-btn">检索</button>
       </form>
 
       <div class="hints" id="hints">
@@ -51,7 +71,7 @@
     <!-- 左侧：结果 -->
     <section class="results-col">
       <div class="result-meta" id="result-meta" hidden></div>
-      <div class="notice" id="notice" hidden></div>
+      <div class="notice glass" id="notice" hidden></div>
       <div id="suggestion" class="suggestion" hidden></div>
       <ol class="results" id="results"></ol>
       <div class="pager" id="pager" hidden>
@@ -73,13 +93,13 @@
         <div class="related-list" id="related-list"></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="data-source">
         <h2 class="card-title">数据来源与缓存</h2>
         <dl class="stats" id="stats"></dl>
         <p class="card-note" id="trigger-note"></p>
       </div>
 
-      <div class="card">
+      <div class="card" id="compliance">
         <h2 class="card-title">合规说明</h2>
         <ul class="compliance">
           <li>只读低频，请求间隔 ≥ 2 秒（配置校验强制）</li>
