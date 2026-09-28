@@ -61,6 +61,8 @@ skills-lock.json
 .cursor/
 .aider*
 .continue/
+# hallmark 技能导出的令牌残留（仓库根目录，无任何代码引用，且是已废弃主题）
+tokens.css
 
 # ===== 编辑器 / 操作系统 =====
 .idea/
